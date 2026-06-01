@@ -1,0 +1,288 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700&display=swap');
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/geist";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  /* BizSeq Emerald & Slate Palette - High Contrast */
+  --color-mint-50: #f8fafc;
+  --color-mint-100: #e2e8f0;
+  --color-mint-200: #cbd5e1;
+  --color-mint-300: #94a3b8;
+  --color-mint-400: #10b981;
+  --color-mint-500: #059669;
+  --color-mint-600: #047857;
+  --color-mint-700: #065f46;
+  --color-mint-800: #064e3b;
+  --color-mint-900: #022c22;
+  --color-mint-950: #011c16;
+
+  --shadow-vibrant: 0 10px 25px -5px rgba(2, 44, 34, 0.1);
+  --shadow-glass: 0 8px 32px 0 rgba(0, 0, 0, 0.05);
+}
+
+@layer base {
+  body {
+    @apply antialiased selection:bg-emerald-100 bg-background text-foreground;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html {
+    @apply font-sans;
+  }
+}
+
+.glass-panel {
+  @apply bg-white border border-slate-200 shadow-glass;
+}
+
+.vibrant-card {
+  @apply bg-white rounded-[2rem] border border-slate-200 shadow-sm hover:shadow-vibrant hover:border-emerald-200 hover:translate-y-[-2px] transition-all duration-500;
+}
+
+/* Custom Scrollbar for Dashboard aesthetics */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f1f1f1;
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: #cbd5e1; /* slate-300 */
+  border-radius: 9999px;
+  border: 2px solid #f1f1f1;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: #94a3b8; /* slate-400 */
+}
+
+@theme inline {
+  --font-heading: var(--font-sans);
+  --font-sans: 'Geist Variable', sans-serif;
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+:root {
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.08 0 0); /* Sharper, deeper primary text - #0F172A equivalent */
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.08 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.08 0 0);
+  --primary: oklch(0.08 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.08 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.35 0 0); /* Highly legible dark grey secondary text - #475569 equivalent */
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.08 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.90 0 0);
+  --input: oklch(0.90 0 0);
+  --ring: oklch(0.50 0 0);
+  --chart-1: oklch(0.87 0 0);
+  --chart-2: oklch(0.556 0 0);
+  --chart-3: oklch(0.439 0 0);
+  --chart-4: oklch(0.371 0 0);
+  --chart-5: oklch(0.269 0 0);
+  --radius: 0.625rem;
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.08 0 0);
+  --sidebar-primary: oklch(0.08 0 0);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.95 0 0);
+  --sidebar-accent-foreground: oklch(0.08 0 0);
+  --sidebar-border: oklch(0.90 0 0);
+  --sidebar-ring: oklch(0.50 0 0);
+}
+
+.dark {
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.922 0 0);
+  --primary-foreground: oklch(0.205 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.556 0 0);
+  --chart-1: oklch(0.87 0 0);
+  --chart-2: oklch(0.556 0 0);
+  --chart-3: oklch(0.439 0 0);
+  --chart-4: oklch(0.371 0 0);
+  --chart-5: oklch(0.269 0 0);
+  --sidebar: oklch(0.205 0 0);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.488 0.243 264.376);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.556 0 0);
+}
+
+/* ==========================================
+   GLOBAL TYPOGRAPHY LEGIBILITY OVERRIDES
+   ========================================== */
+
+/* Improve rendering quality globally */
+html, body, #root, *, button, input, select, textarea {
+  -webkit-font-smoothing: antialiased !important;
+  -moz-osx-font-smoothing: grayscale !important;
+  text-rendering: optimizeLegibility !important;
+}
+
+/* Ensure body text has highly legible minimum font weight and contrast */
+body, p, span, td, div, label, select, input, option {
+  font-weight: 500; /* Minimum body text: 500 */
+}
+
+/* Ensure strong heading rendering and deep color */
+h1, h2, h3, h4, h5, h6 {
+  font-weight: 800 !important;
+  color: #0F172A !important;
+}
+
+/* Enhance existing font-weight mappings safely */
+.font-normal {
+  font-weight: 500 !important;
+}
+.font-medium {
+  font-weight: 500 !important;
+}
+.font-semibold {
+  font-weight: 600 !important; /* Labels: 500-600 */
+}
+.font-bold {
+  font-weight: 700 !important; /* Headings: 700-800 */
+}
+.font-black, .font-extrabold {
+  font-weight: 800 !important;
+}
+
+/* Dynamic text color utility overrides to replace washed-out grays with high-contrast, sharp enterprise colors */
+.text-slate-300 {
+  color: #64748B !important; /* slate-500 (highly legible muted text) */
+}
+.text-slate-400 {
+  color: #475569 !important; /* slate-600 (rich secondary text) */
+}
+.text-slate-500 {
+  color: #334155 !important; /* slate-700 */
+}
+.text-slate-600 {
+  color: #0F172A !important; /* slate-900 (primary-grade text) */
+}
+.text-slate-700 {
+  color: #0F172A !important;
+}
+.text-slate-800 {
+  color: #0F172A !important;
+}
+.text-slate-900 {
+  color: #020617 !important; /* Deepest ink black */
+}
+.text-slate-950 {
+  color: #020617 !important;
+}
+
+/* Tailwind standard muted and public grey overrides */
+.text-muted-foreground {
+  color: #475569 !important; /* Highly readable secondary */
+}
+.text-gray-400, .text-neutral-400, .text-zinc-400 {
+  color: #475569 !important;
+}
+.text-gray-500, .text-neutral-500, .text-zinc-500 {
+  color: #334155 !important;
+}
+
+/* Address Apple-style faded custom colors used in static components */
+.text-\[\#8E8E93\] {
+  color: #475569 !important;
+}
+.text-\[\#333333\] {
+  color: #0F172A !important;
+}
+.text-\[\#8E8E93\], .text-slate-400, .text-slate-300 {
+  opacity: 1 !important; /* Prevent double opacity styling */
+}
+
+/* Reduce excessive letter spacing on small uppercase titles/captions for crisp legibility */
+.tracking-widest {
+  letter-spacing: 0.08em !important; /* Crisp, readable layout */
+}
+.tracking-wider {
+  letter-spacing: 0.04em !important;
+}
+
+/* Ensure table headers are black, crisp, bold and perfectly legible */
+th {
+  color: #020617 !important;
+  font-weight: 800 !important;
+  text-transform: uppercase;
+  letter-spacing: 0.04em !important;
+}

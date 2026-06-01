@@ -1,0 +1,64 @@
+{
+  "entities": {
+    "Store": {
+      "title": "Store",
+      "description": "Multi-tenant store entity",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "status": { "type": "string", "enum": ["active", "suspended"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "adminEmail": { "type": "string" }
+      },
+      "required": ["name", "status"]
+    },
+    "User": {
+      "title": "User",
+      "description": "System user (SuperAdmin, StoreAdmin, Staff)",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "username": { "type": "string" },
+        "email": { "type": "string" },
+        "role": { "type": "string", "enum": ["superAdmin", "storeAdmin", "manager", "staff", "cashier"] },
+        "storeId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "username", "role", "storeId"]
+    },
+    "Product": {
+      "title": "Product",
+      "description": "Inventory product",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "sku": { "type": "string" },
+        "price": { "type": "number" },
+        "stock": { "type": "number" },
+        "category": { "type": "string" },
+        "storeId": { "type": "string" },
+        "lastUpdated": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "price", "stock", "storeId"]
+    },
+    "Sale": {
+      "title": "Sale",
+      "description": "Transaction record",
+      "type": "object",
+      "properties": {
+        "storeId": { "type": "string" },
+        "cashierId": { "type": "string" },
+        "items": { "type": "array" },
+        "total": { "type": "number" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["storeId", "total", "items", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/stores/{storeId}": { "schema": "Store", "description": "Global store registry" },
+    "/users/{userId}": { "schema": "User", "description": "Unified user registry" },
+    "/products/{productId}": { "schema": "Product", "description": "Store specific inventory" },
+    "/sales/{saleId}": { "schema": "Sale", "description": "Store specific sales history" }
+  }
+}

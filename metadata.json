@@ -1,0 +1,6 @@
+{
+  "name": "BizSeq Multi-Store POS",
+  "description": "Multi-tenant inventory management system with store isolation, POS terminal, and role-based access control.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}

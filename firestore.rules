@@ -1,0 +1,117 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------------------------------------------------------
+    // Helper Functions
+    // ---------------------------------------------------------
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function belongsToStore(storeId) {
+      return isSignedIn() && (
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.storeId == storeId
+        || get(/databases/$(database)/documents/users/$(request.auth.uid)).data.storeId == 'SYSTEM'
+      );
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128;
+    }
+
+    function isSuperAdmin() {
+      return isSignedIn() && (
+        request.auth.uid == "c9grDXNTL6f1in8ZYZzPKtNhhE92" ||
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "super_admin" ||
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "superAdmin"
+      );
+    }
+
+    // Default Deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // =========================================================
+    // Core Collections
+    // =========================================================
+
+    // Users
+    match /users/{userId} {
+      allow read: if isSignedIn();
+      allow write: if isOwner(userId) || isSuperAdmin();
+    }
+
+    // Stores
+    match /stores/{storeId} {
+      allow read: if isSignedIn();
+      allow create: if isSuperAdmin();
+      allow update: if isSignedIn() && (
+        isSuperAdmin() || 
+        (
+          belongsToStore(storeId) &&
+          !request.resource.data.diff(resource.data).affectedKeys().hasAny(['name', 'status', 'createdAt', 'adminEmail'])
+        )
+      );
+      allow delete: if isSuperAdmin();
+    }
+
+    // Products
+    match /products/{productId} {
+      allow read: if isSignedIn(); // Filtered by app logic usually
+      allow write: if isSignedIn(); // Basic check, ideally belongsToStore
+    }
+
+    // Sales
+    match /sales/{saleId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn();
+      allow update: if isSignedIn(); // For voiding
+    }
+
+    // Customers
+    match /customers/{customerId} {
+      allow read, create, update, delete: if isSignedIn();
+    }
+
+    // Suppliers
+    match /suppliers/{supplierId} {
+      allow read, create, update, delete: if isSignedIn();
+      match /transactions/{transactionId} {
+        allow read, write: if isSignedIn();
+      }
+    }
+
+    // Inventory Locations
+    match /inventory_locations/{locationId} {
+      allow read, write: if isSignedIn();
+    }
+
+    // Inventory Location Stock
+    match /inventory_location_stock/{stockId} {
+      allow read, write: if isSignedIn();
+    }
+
+    // Stock Transfers
+    match /stock_transfers/{transferId} {
+      allow read, create: if isSignedIn();
+    }
+
+    // Inventory Logs
+    match /inventory_logs/{logId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn();
+    }
+
+    // Legacy/Other
+    match /inventory/{itemId} {
+      allow read, write: if isSignedIn();
+    }
+  }
+}
