@@ -624,7 +624,9 @@ const SalesHistory: React.FC = () => {
                          console.log("PRINT ELEMENT ID:", printEl?.id);
                          console.log("PRINT ELEMENT EXISTS:", !!printEl);
                          console.log("PRINT ELEMENT OUTER HTML:", printEl?.outerHTML?.slice(0, 500));
-                         printElementViaIframe('printable-receipt-container', printFormat);
+                         const selectedPaperFormat = printFormat;
+                          console.log("SELECTED PAPER FORMAT:", selectedPaperFormat);
+                          printElementViaIframe('printable-receipt-container', printFormat);
                        } catch (e) {
                          console.error("Standard printing triggered:", e);
                          window.print();

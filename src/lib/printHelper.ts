@@ -4,6 +4,8 @@
  */
 export function printElementViaIframe(elementId: string, printFormat: '58mm' | '80mm' | 'standard') {
   console.log("[PrintHelper] 1. printElementViaIframe started. elementId:", elementId, "format:", printFormat);
+  const format = printFormat;
+  console.log("FORMAT RECEIVED BY PRINT HELPER:", format);
 
   let element: HTMLElement | null = null;
   try {
@@ -109,6 +111,17 @@ export function printElementViaIframe(elementId: string, printFormat: '58mm' | '
     console.error("[PrintHelper] Error opening iframe document:", error);
   }
 
+  let pageCss = '';
+  try {
+    pageCss = `@page { size: ${printFormat === '58mm' ? '58mm auto' : printFormat === '80mm' ? '80mm auto' : 'auto'}; margin: 0; }`;
+    console.log("GENERATED PAGE CSS:", pageCss);
+  } catch (error) {
+    console.error("[PrintHelper] Error generating or logging page CSS:", error);
+  }
+
+  const isReceipt = printFormat === '58mm' || printFormat === '80mm';
+  const widthVal = isReceipt ? printFormat : 'auto';
+
   try {
     console.log("[PrintHelper] 6. html written");
     doc.write(`
@@ -118,6 +131,7 @@ export function printElementViaIframe(elementId: string, printFormat: '58mm' | '
           <title>BIZSEQ Receipt Print</title>
           ${styleTags}
           <style>
+            ${pageCss}
             @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700;800&family=Inter:wght@400;500;700;900&display=swap');
             
             body {
@@ -130,6 +144,26 @@ export function printElementViaIframe(elementId: string, printFormat: '58mm' | '
               print-color-adjust: exact !important;
             }
 
+            ${isReceipt ? `
+            html,
+            body {
+              width: ${widthVal} !important;
+              max-width: ${widthVal} !important;
+              margin: 0 !important;
+              padding: 0 !important;
+              overflow: hidden !important;
+            }
+            ` : ''}
+
+            #printable-receipt-container {
+              width: ${isReceipt ? widthVal : '100%'} !important;
+              max-width: ${isReceipt ? widthVal : '100%'} !important;
+              margin: 0 auto !important;
+              padding: 0 !important;
+              box-shadow: none !important;
+              border-radius: 0 !important;
+            }
+
             /* Overrule sizes strictly to respect selection */
             .printable-root {
               display: block !important;
@@ -138,7 +172,7 @@ export function printElementViaIframe(elementId: string, printFormat: '58mm' | '
               max-width: ${printFormat === '58mm' ? '58mm' : printFormat === '80mm' ? '80mm' : '210mm'} !important;
               margin: 0 auto !important;
               padding: ${printFormat === 'standard' ? '20px' : '0px'} !important;
-              box-sizing: border-box;
+              box-sizing: border-box !important;
             }
 
             @media print {

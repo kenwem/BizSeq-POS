@@ -360,82 +360,7 @@ const POS: React.FC = () => {
     };
 
     try {
-      if (isOnline) {
-        await runTransaction(db, async (transaction) => {
-          const saleRef = doc(collection(db, 'sales'));
-          const finalSaleData: any = {
-            ...saleData,
-            id: saleRef.id,
-            createdAt: serverTimestamp()
-          };
-          if (finalSaleData.splitPayments === undefined) {
-            delete finalSaleData.splitPayments;
-          }
-          
-          for (const item of cart as any[]) {
-            const productRef = doc(db, 'products', item.productId);
-            const stockId = `${item.productId}_${item.inventoryLocationId}`;
-            const stockRef = doc(db, 'inventory_location_stock', stockId);
-            
-            const [productSnap, stockSnap] = await Promise.all([
-              transaction.get(productRef),
-              transaction.get(stockRef)
-            ]);
-            
-            if (!productSnap.exists()) {
-              throw new Error(`Product ${item.name} not found.`);
-            }
-            
-            const currentProductData = productSnap.data();
-            const currentTotalStock = currentProductData.stock || 0;
-            // Robust check: if the specific stock location record does not exist yet, fallback to parent total stock
-            const currentSectionStock = stockSnap.exists() 
-              ? (stockSnap.data().quantity ?? 0) 
-              : currentTotalStock;
-            
-            const totalUnitsToDeduct = item.quantity * (item.conversionRate || 1);
-            
-            const bypassStockCheck = localStorage.getItem("store_allow_negative_stock") === "true";
-            if (!bypassStockCheck && currentSectionStock < totalUnitsToDeduct) {
-               const locName = locations.find(l => l.id === item.inventoryLocationId)?.name || 'selected location';
-               throw new Error(`Insufficient stock for ${item.name} in ${locName}. Available: ${currentSectionStock}`);
-            }
-            
-            // Update total product stock
-            transaction.update(productRef, {
-              stock: bypassStockCheck ? (currentTotalStock - totalUnitsToDeduct) : Math.max(0, currentTotalStock - totalUnitsToDeduct),
-              updatedAt: serverTimestamp()
-            });
-
-            // Update location specific stock
-            if (stockSnap.exists()) {
-              transaction.update(stockRef, {
-                quantity: bypassStockCheck ? (currentSectionStock - totalUnitsToDeduct) : Math.max(0, currentSectionStock - totalUnitsToDeduct),
-                updatedAt: serverTimestamp()
-              });
-            } else {
-              transaction.set(stockRef, {
-                productId: item.productId,
-                inventoryLocationId: item.inventoryLocationId,
-                quantity: bypassStockCheck ? (currentSectionStock - totalUnitsToDeduct) : Math.max(0, currentSectionStock - totalUnitsToDeduct),
-                synced: true,
-                storeId: profile.storeId,
-                updatedAt: serverTimestamp()
-              });
-            }
-          }
-          
-          transaction.set(saleRef, finalSaleData);
-          setLastSale({ ...finalSaleData, createdAt: new Date() });
-          await dexie.sales.put({ 
-            ...finalSaleData, 
-            createdAt: new Date(), // Real Date for immediate local rendering & proper caching (avoiding serverTimestamp null-evaluation in sorting)
-            synced: true 
-          } as any);
-        });
-        showToast("Sale completed successfully!", "success");
-      } else {
-        // Offline: record locally first, deduct offline stocks in Dexie, queue for sync
+      const runOfflineCheckout = async () => {
         const offlineSale = {
           ...saleData,
           createdAt: new Date()
@@ -481,6 +406,97 @@ const POS: React.FC = () => {
         }
         
         setLastSale(offlineSale);
+      };
+
+      if (isOnline) {
+        try {
+          // 4-second timeout race to prevent POS checkout from getting trapped/hanging on network lag or Firestore credential blockage
+          const timeoutPromise = new Promise<never>((_, reject) => {
+            setTimeout(() => reject(new Error("Timeout: Firestore transaction is taking too long. Transitioning to offline storage mode to prevent stall.")), 4000);
+          });
+
+          await Promise.race([
+            runTransaction(db, async (transaction) => {
+              const saleRef = doc(collection(db, 'sales'));
+              const finalSaleData: any = {
+                ...saleData,
+                id: saleRef.id,
+                createdAt: serverTimestamp()
+              };
+              if (finalSaleData.splitPayments === undefined) {
+                delete finalSaleData.splitPayments;
+              }
+              
+              for (const item of cart as any[]) {
+                const productRef = doc(db, 'products', item.productId);
+                const stockId = `${item.productId}_${item.inventoryLocationId}`;
+                const stockRef = doc(db, 'inventory_location_stock', stockId);
+                
+                // Sequential transaction gets for optimal cross-browser stability and preventing Firestore client-side race locks
+                const productSnap = await transaction.get(productRef);
+                const stockSnap = await transaction.get(stockRef);
+                
+                if (!productSnap.exists()) {
+                  throw new Error(`Product ${item.name} not found.`);
+                }
+                
+                const currentProductData = productSnap.data();
+                const currentTotalStock = currentProductData.stock || 0;
+                // Robust check: if the specific stock location record does not exist yet, fallback to parent total stock
+                const currentSectionStock = stockSnap.exists() 
+                  ? (stockSnap.data().quantity ?? 0) 
+                  : currentTotalStock;
+                
+                const totalUnitsToDeduct = item.quantity * (item.conversionRate || 1);
+                
+                const bypassStockCheck = localStorage.getItem("store_allow_negative_stock") === "true";
+                if (!bypassStockCheck && currentSectionStock < totalUnitsToDeduct) {
+                   const locName = locations.find(l => l.id === item.inventoryLocationId)?.name || 'selected location';
+                   throw new Error(`Insufficient stock for ${item.name} in ${locName}. Available: ${currentSectionStock}`);
+                }
+                
+                // Update total product stock
+                transaction.update(productRef, {
+                  stock: bypassStockCheck ? (currentTotalStock - totalUnitsToDeduct) : Math.max(0, currentTotalStock - totalUnitsToDeduct),
+                  updatedAt: serverTimestamp()
+                });
+
+                // Update location specific stock
+                if (stockSnap.exists()) {
+                  transaction.update(stockRef, {
+                    quantity: bypassStockCheck ? (currentSectionStock - totalUnitsToDeduct) : Math.max(0, currentSectionStock - totalUnitsToDeduct),
+                    updatedAt: serverTimestamp()
+                  });
+                } else {
+                  transaction.set(stockRef, {
+                    productId: item.productId,
+                    inventoryLocationId: item.inventoryLocationId,
+                    quantity: bypassStockCheck ? (currentSectionStock - totalUnitsToDeduct) : Math.max(0, currentSectionStock - totalUnitsToDeduct),
+                    synced: true,
+                    storeId: profile.storeId,
+                    updatedAt: serverTimestamp()
+                  });
+                }
+              }
+              
+              transaction.set(saleRef, finalSaleData);
+              setLastSale({ ...finalSaleData, createdAt: new Date() });
+              await dexie.sales.put({ 
+                ...finalSaleData, 
+                createdAt: new Date(),
+                synced: true 
+              } as any);
+            }),
+            timeoutPromise
+          ]);
+          showToast("Sale completed successfully!", "success");
+        } catch (onlineErr: any) {
+          console.warn("Online transaction aborted or hung, transitioning to secure offline local storage mode:", onlineErr);
+          await runOfflineCheckout();
+          showToast(`Transaction redirected to safe offline local storage: ${onlineErr.message || 'Stalled Connection'}`, "warning");
+        }
+      } else {
+        await runOfflineCheckout();
         showToast("Checkout completed locally (Offline Mode). Sale will sync when internet is restored.", "warning");
       }
       
@@ -504,6 +520,8 @@ const POS: React.FC = () => {
     console.log("PRINT ELEMENT OUTER HTML:", printEl?.outerHTML?.slice(0, 500));
     if (!lastSale) return;
     try {
+      const selectedPaperFormat = printFormat;
+      console.log("SELECTED PAPER FORMAT:", selectedPaperFormat);
       printElementViaIframe('printable-receipt-container', printFormat);
     } catch (err: any) {
       console.error("POS Printing Trigger Error:", err);
