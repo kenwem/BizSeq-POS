@@ -15,13 +15,42 @@ import Reports from './pages/Reports';
 import MainLayout from './components/layout/MainLayout';
 import ErrorBoundary from './components/common/ErrorBoundary';
 import { db as dexie } from './services/db';
-import { db as firestore } from './services/firebase';
+import { db as firestore, auth } from './services/firebase';
 import { collection, doc, runTransaction, serverTimestamp } from 'firebase/firestore';
+import { PrintDiagnostics } from './components/PrintDiagnostics';
 
 function PrivateRoute({ children, allowedRoles }: { children: React.ReactNode; allowedRoles?: string[] }) {
-  const { user, profile, loading } = useAuth();
+  const { user, profile, loading, error, signOut } = useAuth();
 
-  if (loading) return <div className="h-screen w-screen flex items-center justify-center font-mono bg-slate-50 text-slate-900">LOADING NODE...</div>;
+  // Prevent immediate redirect back to /login during login transition
+  const directUser = auth.currentUser;
+
+  if (loading || (directUser && !user)) {
+    return <div className="h-screen w-screen flex items-center justify-center font-mono bg-slate-50 text-slate-900">LOADING NODE...</div>;
+  }
+  
+  if (error) {
+    return (
+      <div className="h-screen w-screen flex flex-col items-center justify-center font-mono bg-red-50 text-red-900 p-6 text-center gap-4">
+        <h1 className="text-xl font-bold uppercase tracking-wider">Authentication Error</h1>
+        <p className="text-sm border border-red-200 bg-white px-4 py-2 rounded-xl max-w-md shadow-sm font-semibold">{error}</p>
+        <button 
+          onClick={async () => {
+            try {
+              await signOut();
+            } catch (err) {
+              console.error(err);
+            }
+            window.location.href = '/login';
+          }}
+          className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-xs font-black uppercase transition-all"
+        >
+          Return to Login
+        </button>
+      </div>
+    );
+  }
+
   if (!user) return <Navigate to="/login" />;
   
   if (allowedRoles && profile?.role && !allowedRoles.includes(profile.role)) {
@@ -29,7 +58,8 @@ function PrivateRoute({ children, allowedRoles }: { children: React.ReactNode; a
     return <Navigate to="/" />;
   }
 
-  return children;
+  console.log("PRIVATE ROUTE GRANTED", user.uid);
+  return <>{children}</>;
 }
 
 const syncOfflineData = async () => {
@@ -187,6 +217,7 @@ export default function App() {
   return (
     <AuthProvider>
       <AppRoutes />
+      <PrintDiagnostics />
     </AuthProvider>
   );
 }

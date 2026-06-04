@@ -28,7 +28,6 @@ const MainLayout: React.FC = () => {
 
   React.useEffect(() => {
     if (profile) {
-      console.log("SIDEBAR STORE NAME:", profile.storeName || profile.store?.name || 'Store');
     }
   }, [profile]);
 

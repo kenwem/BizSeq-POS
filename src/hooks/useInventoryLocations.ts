@@ -114,10 +114,21 @@ export function useInventoryLocations(storeId?: string) {
     }
   });
 
+  const deleteLocationMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const docRef = doc(firestore, 'inventory_locations', id);
+      await deleteDoc(docRef);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['inventory-locations', storeId] });
+    }
+  });
+
   return {
     locations,
     isLoading,
     addLocation: addLocationMutation.mutateAsync,
     updateLocation: updateLocationMutation.mutateAsync,
+    deleteLocation: deleteLocationMutation.mutateAsync,
   };
 }

@@ -25,6 +25,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { createPortal } from 'react-dom';
 import { PrintableReceipt } from '../components/common/PrintableReceipt';
 import { printElementViaIframe } from '../lib/printHelper';
+import { bluetoothPrinterService } from '../services/bluetoothPrinterService';
 
 interface SaleRecord {
   id: string;
@@ -49,6 +50,62 @@ const SalesHistory: React.FC = () => {
   const [printFormat, setPrintFormat] = useState<'80mm' | '58mm' | 'standard'>(() => {
     return (localStorage.getItem('pos_selected_printer_format') as any) || '80mm';
   });
+
+  // Web Bluetooth Printer states for reprint
+  const [btSupported, setBtSupported] = useState(false);
+  const [btConnected, setBtConnected] = useState(false);
+  const [btDeviceName, setBtDeviceName] = useState('');
+  const [btConnecting, setBtConnecting] = useState(false);
+
+  useEffect(() => {
+    setBtSupported(bluetoothPrinterService.isSupported());
+    const interval = setInterval(async () => {
+      const conn = await bluetoothPrinterService.isConnected();
+      setBtConnected(conn);
+      if (conn) {
+        setBtDeviceName(bluetoothPrinterService.getConnectedDeviceName());
+      } else {
+        setBtDeviceName('');
+      }
+    }, 2000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const handleConnectBluetooth = async () => {
+    setBtConnecting(true);
+    try {
+      const success = await bluetoothPrinterService.connect();
+      if (success) {
+        const name = bluetoothPrinterService.getConnectedDeviceName();
+        setBtConnected(true);
+        setBtDeviceName(name);
+      }
+    } catch (err: any) {
+      console.error(err);
+    } finally {
+      setBtConnecting(false);
+    }
+  };
+
+  const handleDisconnectBluetooth = async () => {
+    try {
+      await bluetoothPrinterService.disconnect();
+      setBtConnected(false);
+      setBtDeviceName('');
+    } catch (err: any) {
+      console.error(err);
+    }
+  };
+
+  const handleBluetoothPrint = async () => {
+    if (printFormat === 'standard') return;
+    if (!selectedSaleForReceipt) return;
+    try {
+      await bluetoothPrinterService.printReceipt(selectedSaleForReceipt, printFormat, profile);
+    } catch (err: any) {
+      console.error(err);
+    }
+  };
 
   useEffect(() => {
     if (authLoading) return;
@@ -594,9 +651,49 @@ const SalesHistory: React.FC = () => {
                         </div>
                       </button>
                     </div>
-                  </div>
 
-                  {/* Sandbox Notice removed as requested */}
+                    {/* Bluetooth Printer Connection Controller Card */}
+                    {btSupported ? (
+                      <div className="mt-5 border border-slate-250 rounded-2xl p-4 bg-white shadow-sm font-sans flex flex-col gap-3">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-1.5 font-sans">
+                            <span className={cn("h-2.5 w-2.5 rounded-full inline-block", btConnected ? "bg-emerald-500 animate-pulse" : "bg-rose-400")} />
+                            <span className="text-[10px] font-black uppercase tracking-wider text-slate-500">Bluetooth Link</span>
+                          </div>
+                          {btConnected && (
+                            <span className="text-[9px] font-mono font-black text-emerald-600 bg-emerald-50 border border-emerald-100/55 px-1.5 py-0.5 rounded-md">CONNECTED</span>
+                          )}
+                        </div>
+
+                        {btConnected ? (
+                          <div className="space-y-2">
+                            <p className="text-[11px] font-black leading-tight text-slate-800 truncate">Printer: {btDeviceName}</p>
+                            <button
+                              type="button"
+                              onClick={handleDisconnectBluetooth}
+                              className="text-[9px] font-extrabold uppercase text-rose-500 hover:text-rose-600 pr-2 tracking-wider inline-block cursor-pointer transition-colors animate-fade-in"
+                            >
+                              Disconnect
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            disabled={btConnecting}
+                            onClick={handleConnectBluetooth}
+                            className="w-full py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-[10px] font-black uppercase tracking-widest active:scale-95 transition-all text-center flex items-center justify-center gap-2 cursor-pointer shadow-sm disabled:opacity-40"
+                          >
+                            {btConnecting ? "Prv Pairing..." : "🔗 Connect Thermal"}
+                          </button>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="mt-5 border border-dashed border-slate-250 rounded-2xl p-4 bg-slate-50 text-center font-sans">
+                        <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Bluetooth Unavailable</p>
+                        <p className="text-[9px] text-slate-400 font-medium leading-normal mt-1">Requires Google Chrome, Microsoft Edge, or Android Chrome launcher.</p>
+                      </div>
+                    )}
+                  </div>
                 </div>
 
                 {/* Receipt Preview */}
@@ -615,18 +712,25 @@ const SalesHistory: React.FC = () => {
                    >
                      Close Panel
                    </button>
+                   
+                   {btConnected && printFormat !== 'standard' && (
+                     <button 
+                       type="button"
+                       onClick={handleBluetoothPrint} 
+                       className="w-full py-4 bg-emerald-600 text-white hover:bg-emerald-750 border border-emerald-500 shadow-lg shadow-emerald-600/10 rounded-2xl font-black uppercase text-xs tracking-wider flex items-center justify-center gap-2 transition-all active:scale-95"
+                     >
+                       <Zap className="h-4 w-4 shrink-0 animate-bounce text-emerald-200" />
+                       Print Bluetooth
+                     </button>
+                   )}
+
                    <button 
                      type="button"
                      onClick={() => {
                        try {
-                         console.log("PRINT CLICKED");
                          const printEl = document.getElementById('printable-receipt-container');
-                         console.log("PRINT ELEMENT ID:", printEl?.id);
-                         console.log("PRINT ELEMENT EXISTS:", !!printEl);
-                         console.log("PRINT ELEMENT OUTER HTML:", printEl?.outerHTML?.slice(0, 500));
                          const selectedPaperFormat = printFormat;
-                          console.log("SELECTED PAPER FORMAT:", selectedPaperFormat);
-                          printElementViaIframe('printable-receipt-container', printFormat);
+                         printElementViaIframe('printable-receipt-container', printFormat);
                        } catch (e) {
                          console.error("Standard printing triggered:", e);
                          window.print();
@@ -635,7 +739,7 @@ const SalesHistory: React.FC = () => {
                      className="w-full py-4 bg-[#00529B] text-white hover:bg-blue-800 rounded-2xl font-black uppercase text-xs tracking-wider flex items-center justify-center gap-2 shadow-xl transition-all active:scale-95"
                    >
                      <Printer className="h-4 w-4"/>
-                     Print receipt
+                     System Print
                    </button>
                 </div>
              </motion.div>

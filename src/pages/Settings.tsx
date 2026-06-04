@@ -273,10 +273,6 @@ const Settings: React.FC = () => {
 
   const handleUpdateProfile = async (e: React.FormEvent) => {
     e.preventDefault();
-    console.log("Settings: Attempting to update profile", {
-      uid: profile?.uid,
-      username,
-    });
     if (!profile?.uid) return;
     setIsSaving(true);
     try {
@@ -480,13 +476,11 @@ const Settings: React.FC = () => {
   };
 
   const selectModule = (id: string) => {
-    console.log(`Settings: Activating module [${id}]`);
     setActiveModule(id);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
   const renderModule = () => {
-    console.log(`Settings: Rendering module [${activeModule}]`);
     switch (activeModule) {
       case "profile":
         return (
@@ -877,8 +871,12 @@ const Settings: React.FC = () => {
               </p>
 
               <div className="space-y-4">
-                {locations.map((loc) => (
-                  <div key={loc.id} className="flex flex-col p-6 bg-slate-50 rounded-2xl border border-slate-100 group">
+                {locations.map((loc, index) => {
+                  if (loc.id === '' || loc.id === undefined || loc.id === null) {
+                    console.warn("TEMPORARY KEY DETECTOR:", { file: "Settings.tsx", component: "LocationsSettings", keyVal: loc.id });
+                  }
+                  return (
+                    <div key={`set-loc-${loc.id || index}-${index}`} className="flex flex-col p-6 bg-slate-50 rounded-2xl border border-slate-100 group">
                     {editingLocationId === loc.id ? (
                       <div className="flex flex-col gap-3">
                         <label className="text-[10px] font-black uppercase text-slate-400">Edit Location Name</label>
@@ -943,7 +941,7 @@ const Settings: React.FC = () => {
                       </div>
                     )}
                   </div>
-                ))}
+                );})}
                 {locations.length === 0 && (
                   <div className="p-6 bg-slate-50 rounded-2xl border border-slate-100 text-center text-slate-400 font-bold italic">
                     No custom locations defined yet.

@@ -84,10 +84,17 @@ export const PrintableReceipt: React.FC<PrintableReceiptProps> = ({ sale, format
         <div className="border-t border-dashed border-black pt-1 space-y-0.5 text-[9px]">
           <div className="flex justify-between"><span>SUB:</span><span>{formatCurrency(sale.subtotal || sale.total)}</span></div>
           {sale.discount ? <div className="flex justify-between"><span>DISC:</span><span>-{formatCurrency(sale.discount)}</span></div> : null}
+          {sale.cashbackAmount ? <div className="flex justify-between"><span>CSHBK:</span><span>+{formatCurrency(sale.cashbackAmount)}</span></div> : null}
           <div className="flex justify-between font-bold text-[11px] border-t border-dashed border-black pt-1">
             <span>DUE NGN:</span>
-            <span>{formatCurrency(sale.total)}</span>
+            <span>{formatCurrency(sale.total + (sale.cashbackAmount || 0))}</span>
           </div>
+          {sale.tenderedAmount !== undefined ? (
+            <>
+              <div className="flex justify-between text-[8px] text-zinc-600"><span>PAID:</span><span>{formatCurrency(sale.tenderedAmount)}</span></div>
+              <div className="flex justify-between text-[8px] font-bold"><span>CHANGE:</span><span>{formatCurrency(sale.changeDue || 0)}</span></div>
+            </>
+          ) : null}
         </div>
 
         <div className="text-center text-[8px] mt-4 pt-1 border-t border-dashed border-black">
@@ -142,10 +149,17 @@ export const PrintableReceipt: React.FC<PrintableReceiptProps> = ({ sale, format
         <div className="border-t-2 border-dashed border-black pt-2 space-y-1">
           <div className="flex justify-between"><span>Subtotal:</span><span>{formatCurrency(sale.subtotal || sale.total)}</span></div>
           {sale.discount ? <div className="flex justify-between"><span>Discount:</span><span>-{formatCurrency(sale.discount)}</span></div> : null}
+          {sale.cashbackAmount ? <div className="flex justify-between text-yellow-600"><span>Store Cashback:</span><span>+{formatCurrency(sale.cashbackAmount)}</span></div> : null}
           <div className="flex justify-between text-sm font-black border-t-2 border-dashed border-black pt-2">
-            <span>TOTAL DUE:</span>
-            <span>{formatCurrency(sale.total)}</span>
+            <span>TOTAL AMOUNT:</span>
+            <span>{formatCurrency(sale.total + (sale.cashbackAmount || 0))}</span>
           </div>
+          {sale.tenderedAmount !== undefined ? (
+            <>
+              <div className="flex justify-between text-[11px] text-zinc-600"><span>Amount Paid:</span><span>{formatCurrency(sale.tenderedAmount)}</span></div>
+              <div className="flex justify-between text-[11px] font-black"><span>Balance / Change:</span><span>{formatCurrency(sale.changeDue || 0)}</span></div>
+            </>
+          ) : null}
         </div>
 
         <div className="text-center text-[10px] mt-6 pt-3 border-t border-dashed border-black space-y-1">
@@ -253,10 +267,28 @@ export const PrintableReceipt: React.FC<PrintableReceiptProps> = ({ sale, format
               <span className="font-mono font-bold">-{formatCurrency(sale.discount)}</span>
             </div>
           ) : null}
+          {sale.cashbackAmount ? (
+            <div className="flex justify-between text-yellow-600">
+              <span>Store Cashback:</span>
+              <span className="font-mono font-bold">+{formatCurrency(sale.cashbackAmount)}</span>
+            </div>
+          ) : null}
           <div className="flex justify-between border-t border-slate-200 pt-3 text-lg font-black text-slate-950">
             <span>TOTAL AMOUNT:</span>
-            <span className="font-mono text-blue-900 italic">{formatCurrency(sale.total)}</span>
+            <span className="font-mono text-blue-900 italic">{formatCurrency(sale.total + (sale.cashbackAmount || 0))}</span>
           </div>
+          {sale.tenderedAmount !== undefined ? (
+            <>
+              <div className="flex justify-between border-t border-dashed border-slate-200 pt-2 text-slate-500">
+                <span>Amount Paid:</span>
+                <span className="font-mono font-bold">{formatCurrency(sale.tenderedAmount)}</span>
+              </div>
+              <div className="flex justify-between text-slate-900 font-extrabold">
+                <span>Balance / Change Due:</span>
+                <span className="font-mono text-emerald-600">{formatCurrency(sale.changeDue || 0)}</span>
+              </div>
+            </>
+          ) : null}
         </div>
       </div>
 

@@ -19,7 +19,7 @@ import {
   RefreshCw
 } from 'lucide-react';
 import { motion } from 'motion/react';
-import { formatCurrency, cn } from '../lib/utils';
+import { formatCurrency, cn, cleanTo6Digits } from '../lib/utils';
 import { Link, useNavigate } from 'react-router-dom';
 import { 
   AreaChart, 
@@ -37,7 +37,6 @@ const Dashboard: React.FC = () => {
 
   useEffect(() => {
     if (profile) {
-      console.log("DASHBOARD STORE NAME:", profile.storeName || profile.store?.name || 'Store');
     }
   }, [profile]);
 
@@ -433,7 +432,7 @@ const Dashboard: React.FC = () => {
                       return (
                         <tr key={`dash-lowstock-${p.id || 'unkn'}-${idx}`} className="hover:bg-slate-50 transition-colors">
                           <td className="p-2 pl-3 font-bold text-slate-950 uppercase">{p.name}</td>
-                          <td className="p-2 font-mono text-[10px] text-slate-500">{p.sku || p.barcode || 'N/A'}</td>
+                          <td className="p-2 font-mono text-[10px] text-slate-500">{cleanTo6Digits(p.sku || p.barcode) || 'N/A'}</td>
                           <td className="p-2 text-center font-mono">{p.lowStockThreshold || 5}</td>
                           <td className={cn("p-2 text-right pr-3 font-mono font-bold", isCriticalOut ? "text-rose-600" : "text-amber-600")}>
                             {p.stock} units

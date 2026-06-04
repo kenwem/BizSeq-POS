@@ -64,7 +64,6 @@ const Customers: React.FC = () => {
     if (isSaving) return;
     
     setIsSaving(true);
-    console.log("Saving customer:", formData);
     
     try {
       if (editingCustomer) {
@@ -139,14 +138,18 @@ const Customers: React.FC = () => {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
         {isLoading ? (
            Array(6).fill(0).map((_, i) => <div key={i} className="h-48 bg-white/50 rounded-[3rem] animate-pulse" />)
-        ) : filteredCustomers.map((customer, i) => (
-          <motion.div 
-            key={customer.id}
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-            transition={{ delay: i * 0.05 }}
-            className="vibrant-card p-8 group overflow-hidden relative"
-          >
+        ) : filteredCustomers.map((customer, i) => {
+          if (customer.id === '' || customer.id === undefined || customer.id === null) {
+            console.warn("TEMPORARY KEY DETECTOR:", { file: "Customers.tsx", component: "CustomersList", keyVal: customer.id });
+          }
+          return (
+            <motion.div 
+              key={`customer-${customer.id || i}-${i}`}
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              transition={{ delay: i * 0.05 }}
+              className="vibrant-card p-8 group overflow-hidden relative"
+            >
             <div className="flex justify-between items-start mb-6">
                <div className="flex items-center gap-4">
                   <div className="h-12 w-12 bg-indigo-50 rounded-2xl flex items-center justify-center text-indigo-500 group-hover:bg-indigo-500 group-hover:text-white transition-all">
@@ -212,7 +215,7 @@ const Customers: React.FC = () => {
                View Activity <ChevronRight className="h-3 w-3 group-hover/btn:translate-x-1 transition-transform" />
             </button>
           </motion.div>
-        ))}
+        );})}
       </div>
 
       <Dialog open={isModalOpen} onOpenChange={setIsModalOpen}>

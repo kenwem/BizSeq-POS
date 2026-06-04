@@ -26,10 +26,12 @@ import {
   ChevronRight,
   ChevronDown,
   ChevronUp,
-  X
+  X,
+  ArrowLeftRight,
+  ClipboardCheck
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { formatCurrency, cn } from '../lib/utils';
+import { formatCurrency, cn, cleanTo6Digits, generate6DigitCode } from '../lib/utils';
 import { useStore } from '../services/store';
 import Fuse from 'fuse.js';
 import { useDropzone } from 'react-dropzone';
@@ -51,6 +53,8 @@ import {
 import { Badge } from '../components/ui/badge';
 
 import { useInventoryLocations } from '../hooks/useInventoryLocations';
+import { useInventoryStock } from '../hooks/useInventoryStock';
+import { useStockTransfers } from '../hooks/useStockTransfers';
 
 // Helper functions (spec: numeric representation with commas while typing)
 const formatNumericInput = (val: string): string => {
@@ -84,23 +88,6 @@ const parseNumericString = (val: string | number): number => {
   return isNaN(num) ? 0 : num;
 };
 
-const generate6DigitCode = () => {
-  return Math.floor(100000 + Math.random() * 900000).toString();
-};
-
-const cleanTo6Digits = (str: string): string => {
-  if (!str) return '';
-  const clean = str.replace(/[^a-zA-Z0-9]/g, '');
-  if (clean.length > 6) {
-    const digits = str.replace(/\D/g, '');
-    if (digits.length >= 6) {
-      return digits.slice(0, 6);
-    }
-    return clean.slice(0, 6);
-  }
-  return clean;
-};
-
 const UNIT_CATEGORIES = [
   { key: 'VOLUME', name: 'Volume', units: ['Liter', 'Gallon', 'Drum'] },
   { key: 'CONTAINER', name: 'Container', units: ['Bottle', 'Sachet', 'Crate', 'Carton', 'Basket', 'Pack'] },
@@ -117,17 +104,187 @@ const Inventory: React.FC = () => {
     return Array.from(new Map(list.map(p => [p.id, p])).values());
   }, [hookProducts]);
 
-  const { locations: hookLocations, addLocation, updateLocation } = useInventoryLocations(profile?.storeId);
+  const { locations: hookLocations, addLocation, updateLocation, deleteLocation } = useInventoryLocations(profile?.storeId);
   const locations = React.useMemo(() => {
     const list = hookLocations || [];
-    return Array.from(new Map(list.map(l => [l.id, l])).values());
+    const populated = Array.from(new Map(list.map(l => [l.id, l])).values());
+    const loaded = populated.map(l => {
+      if (!l.id || l.id === '') {
+        return { ...l, id: 'default-storage', name: l.name || 'Main Store/Default Storage' };
+      }
+      return l;
+    });
+    if (loaded.length === 0) {
+      return [{ id: 'default-storage', name: 'Main Store/Default Storage', status: 'active' } as any];
+    }
+    return loaded;
   }, [hookLocations]);
+
+  const handleSetDefaultSalesSource = async (locationId: string) => {
+    try {
+      for (const loc of locations) {
+        if (!loc.id || loc.id === 'default-storage') continue;
+        if (loc.id === locationId) {
+          await updateLocation({ id: loc.id, isDefaultSalesSource: true });
+        } else if (loc.isDefaultSalesSource) {
+          await updateLocation({ id: loc.id, isDefaultSalesSource: false });
+        }
+      }
+    } catch (err: any) {
+      console.error("Failed to update default sales source", err);
+      alert("Error: " + err.message);
+    }
+  };
+
+  const handleDeleteLocation = async (id: string, name: string) => {
+    if (id === 'default-storage') {
+      alert("The primary default storage location cannot be deleted.");
+      return;
+    }
+    if (!confirm(`Are you sure you want to delete "${name}"?`)) {
+      return;
+    }
+    try {
+      await deleteLocation(id);
+    } catch (err: any) {
+      console.error("Failed to delete location", err);
+      alert("Error: " + err.message);
+    }
+  };
+
+  // Load and load-balance location inventories and transfers
+  const { stock: allStock, updateStock } = useInventoryStock(profile?.storeId);
+  const { transfers = [], transferStock } = useStockTransfers(profile?.storeId);
+
+  const stockMap = React.useMemo(() => {
+    const map = new Map<string, number>();
+    if (!allStock) return map;
+    for (const item of allStock) {
+      if (item.productId && item.inventoryLocationId) {
+        map.set(`${item.productId}_${item.inventoryLocationId}`, item.quantity || 0);
+      }
+    }
+    return map;
+  }, [allStock]);
 
   const uniqueCategoriesFromProducts = React.useMemo(() => {
     return Array.from(new Set(products.map(p => p.category).filter(Boolean)));
   }, [products]);
   
+  // Navigation and Modal controller states
+  const [activeTab, setActiveTab] = useState<'products' | 'locations' | 'transfers'>('products');
+  const [selectedLocationId, setSelectedLocationId] = useState<string>('default-storage');
+  const [isTransferModalOpen, setIsTransferModalOpen] = useState(false);
+  const [stocktakeProductId, setStocktakeProductId] = useState<string | null>(null);
+  const [stocktakeCount, setStocktakeCount] = useState('');
+
+  // Transfer Form temporary states
+  const [transferProductId, setTransferProductId] = useState('');
+  const [transferFromLocId, setTransferFromLocId] = useState('');
+  const [transferToLocId, setTransferToLocId] = useState('');
+  const [transferQty, setTransferQty] = useState('');
+  const [transferNotes, setTransferNotes] = useState('');
+  const [transferError, setTransferError] = useState('');
+  const [isTransferring, setIsTransferring] = useState(false);
+
+  const exportLocationReportExcel = (locId: string) => {
+    const locName = locations.find(l => l.id === locId)?.name || 'Location';
+    const locStock = products.map(p => {
+      const qty = stockMap.get(`${p.id}_${locId}`) ?? 0;
+      return {
+        'Product Name': p.name,
+        'SKU': p.sku || '',
+        'Barcode': p.barcode || '',
+        'Category': p.category,
+        'Unit Price': p.price,
+        'Cost Price': p.cost,
+        'Quantity': qty,
+        'Inventory Value (Cost)': qty * (p.cost || 0),
+        'Inventory Value (Retail)': qty * (p.price || 0)
+      };
+    });
+
+    const worksheet = XLSX.utils.json_to_sheet(locStock);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Location Inventory");
+    XLSX.writeFile(workbook, `${locName.replace(/\s+/g, '_')}_Inventory_Report.xlsx`);
+  };
+
+  const exportLocationReportPDF = (locId: string) => {
+    const locName = locations.find(l => l.id === locId)?.name || 'Location';
+    const locStockProducts = products.map(p => {
+      const qty = stockMap.get(`${p.id}_${locId}`) ?? 0;
+      return {
+        ...p,
+        stock: qty // override product total stock with location stock
+      };
+    });
+    exportProductsToPDF(locStockProducts, `${profile?.storeName || 'Store'} - ${locName}`);
+  };
+
+  const handleStockTransferSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setTransferError('');
+    setIsTransferring(true);
+    
+    try {
+      const parsedQty = parseFloat(transferQty);
+      if (isNaN(parsedQty) || parsedQty <= 0) {
+        throw new Error('Please enter a valid quantity greater than zero');
+      }
+
+      if (!transferProductId) {
+        throw new Error('Please select a product');
+      }
+
+      if (!transferFromLocId || !transferToLocId) {
+        throw new Error('Please specify both source and destination locations');
+      }
+
+      if (transferFromLocId === transferToLocId) {
+        throw new Error('Source and destination locations must be different');
+      }
+
+      const product = products.find(p => p.id === transferProductId);
+      if (!product) {
+        throw new Error('Selected product does not exist');
+      }
+
+      // Check current stock limit
+      const sourceKey = `${transferProductId}_${transferFromLocId}`;
+      const sourceQtyAvailable = stockMap.get(sourceKey) ?? 0;
+      if (sourceQtyAvailable < parsedQty) {
+        throw new Error(`Insufficient stock in source location. Available: ${sourceQtyAvailable}`);
+      }
+
+      await transferStock({
+        storeId: profile?.storeId || '',
+        productId: transferProductId,
+        fromLocationId: transferFromLocId,
+        toLocationId: transferToLocId,
+        quantity: parsedQty,
+        notes: transferNotes,
+        transferredBy: profile?.username || profile?.email || 'System'
+      });
+
+      // Reset
+      setTransferProductId('');
+      setTransferFromLocId('');
+      setTransferToLocId('');
+      setTransferQty('');
+      setTransferNotes('');
+      setIsTransferModalOpen(false);
+    } catch (err: any) {
+      setTransferError(err.message || 'Failed to transfer stock');
+    } finally {
+      setIsTransferring(false);
+    }
+  };
+
   const [search, setSearch] = useState('');
+  const [locationsSearch, setLocationsSearch] = useState('');
+  const [locationsCategory, setLocationsCategory] = useState('ALL');
+  const [locationsPage, setLocationsPage] = useState(1);
   const [viewMode, setViewMode] = useState<'grid' | 'table'>('table');
   const [filterMode, setFilterMode] = useState<'all' | 'low' | 'out'>('all');
   const [currentPage, setCurrentPage] = useState(1);
@@ -203,6 +360,9 @@ const Inventory: React.FC = () => {
   const [formBasePrice, setFormBasePrice] = useState('');
   const [formMinStockLevel, setFormMinStockLevel] = useState('5');
   const [formDefaultLocation, setFormDefaultLocation] = useState('');
+  const [formLocationAllocations, setFormLocationAllocations] = useState<{ locationId: string; quantity: string; unitName?: string; conversionRate?: number; }[]>([
+    { locationId: 'default-storage', quantity: '', unitName: 'Piece', conversionRate: 1 }
+  ]);
   const [formProductsPerCarton, setFormProductsPerCarton] = useState('');
   const [formPackageType, setFormPackageType] = useState('Carton');
 
@@ -225,6 +385,7 @@ const Inventory: React.FC = () => {
   const [isUnitModalOpen, setIsUnitModalOpen] = useState(false);
   const [isSelectingAdditionalUnit, setIsSelectingAdditionalUnit] = useState(false);
   const [inlineAdditionalUnit, setInlineAdditionalUnit] = useState({ unitType: '', price: '' });
+  const [activeAllocIndexForUnitSelect, setActiveAllocIndexForUnitSelect] = useState<number | null>(null);
   
   // Batch modal state
   const [isAddBatchModalOpen, setIsAddBatchModalOpen] = useState(false);
@@ -253,6 +414,26 @@ const Inventory: React.FC = () => {
         setFormProductsPerCarton(String(editingProduct.packageCapacity || editingProduct.productsPerCarton || ''));
         setFormPackageType(editingProduct.packageType || 'Carton');
         
+        // Load Location stock allocations
+        const existingStocks = allStock.filter(s => s.productId === editingProduct.id);
+        if (existingStocks.length > 0) {
+          setFormLocationAllocations(existingStocks.map(s => ({
+            locationId: s.inventoryLocationId || 'default-storage',
+            quantity: String(s.quantity || '0'),
+            unitName: editingProduct.baseUnit || 'Piece',
+            conversionRate: 1
+          })));
+        } else {
+          setFormLocationAllocations([
+            { 
+              locationId: editingProduct.defaultLocationId || 'default-storage', 
+              quantity: String(editingProduct.stock || '0'), 
+              unitName: editingProduct.baseUnit || 'Piece', 
+              conversionRate: 1 
+            }
+          ]);
+        }
+
         // Load additional units
         const mappedUnits = (editingProduct.units || []).map(u => ({
           unitType: u.name,
@@ -290,6 +471,8 @@ const Inventory: React.FC = () => {
         setFormProductsPerCarton('');
         setFormPackageType('Carton');
         setAdditionalUnits([]);
+        const firstLocId = locations[0]?.id || 'default-storage';
+        setFormLocationAllocations([{ locationId: firstLocId, quantity: '', unitName: 'Piece', conversionRate: 1 }]);
         setCostBatches([{
           costPrice: '',
           quantity: '',
@@ -298,7 +481,41 @@ const Inventory: React.FC = () => {
         }]);
       }
     }
-  }, [isModalOpen, editingProduct]);
+  }, [isModalOpen, editingProduct, allStock, locations]);
+
+  const availableUnitsForAlloc = useMemo(() => {
+    const list: { name: string; conversionRate: number }[] = [];
+    list.push({ name: formBaseUnit || 'Piece', conversionRate: 1 });
+    
+    const capNum = parseNumericString(formProductsPerCarton);
+    if (capNum > 1 && formPackageType) {
+      list.push({ name: formPackageType, conversionRate: capNum });
+    }
+    
+    additionalUnits.forEach(u => {
+      const conv = parseNumericString(u.conversionRate);
+      if (conv > 0 && u.unitType) {
+        list.push({ name: u.unitType, conversionRate: conv });
+      }
+    });
+    
+    return list;
+  }, [formBaseUnit, formProductsPerCarton, formPackageType, additionalUnits]);
+
+  // Synchronize first batch quantity with total allocated stock from locations when user modifies allocations
+  React.useEffect(() => {
+    if (!isModalOpen) return;
+    const totalAllocated = formLocationAllocations.reduce((sum, item) => sum + (parseNumericString(item.quantity) * (item.conversionRate || 1)), 0);
+    setCostBatches(prev => {
+      const copy = [...prev];
+      if (copy.length === 0) {
+        copy.push({ costPrice: '', quantity: String(totalAllocated), date: new Date().toISOString(), isNew: true });
+      } else {
+        copy[0] = { ...copy[0], quantity: formatNumericInput(String(totalAllocated || '')) };
+      }
+      return copy;
+    });
+  }, [formLocationAllocations, isModalOpen]);
 
   const computedTotalQuantity = useMemo(() => {
     return costBatches.reduce((sum, b) => sum + parseNumericString(b.quantity), 0);
@@ -414,6 +631,42 @@ const Inventory: React.FC = () => {
     return { totalItems, totalStock, totalValue, totalCost, lowStockCount };
   }, [products]);
 
+  const filteredLocProducts = useMemo(() => {
+    let list = products || [];
+    
+    // Filter only products stocked at the selected warehouse/location
+    if (selectedLocationId) {
+      list = list.filter(p => {
+        const qty = stockMap.get(`${p.id}_${selectedLocationId}`) ?? 0;
+        return qty > 0;
+      });
+    }
+
+    if (locationsCategory !== 'ALL') {
+      list = list.filter(p => (p.category || 'Uncategorized').toUpperCase() === locationsCategory.toUpperCase());
+    }
+    if (locationsSearch) {
+      const q = locationsSearch.toLowerCase();
+      list = list.filter(p => 
+        (p.name || '').toLowerCase().includes(q) ||
+        (p.sku || '').toLowerCase().includes(q) ||
+        (p.barcode || '').toLowerCase().includes(q) ||
+        (p.category || '').toLowerCase().includes(q)
+      );
+    }
+    return list;
+  }, [products, locationsSearch, locationsCategory, selectedLocationId, stockMap]);
+
+  const LOC_ITEMS_PER_PAGE = 30;
+  const paginatedLocProducts = useMemo(() => {
+    const start = (locationsPage - 1) * LOC_ITEMS_PER_PAGE;
+    return filteredLocProducts.slice(start, start + LOC_ITEMS_PER_PAGE);
+  }, [filteredLocProducts, locationsPage]);
+
+  React.useEffect(() => {
+    setLocationsPage(1);
+  }, [locationsSearch, locationsCategory, selectedLocationId]);
+
   const isReadOnly = profile?.role === 'staff' || profile?.role === 'cashier';
 
   const [isRestockModalOpen, setIsRestockModalOpen] = useState(false);
@@ -459,6 +712,11 @@ const Inventory: React.FC = () => {
     
     if (computedTotalQuantity < 0) {
       errors.quantity = 'Quantity must be a non-negative number';
+    }
+
+    const emptyAllocation = formLocationAllocations.some(a => !a.locationId);
+    if (emptyAllocation) {
+      errors.locations = 'Each stock allocation row must select a valid storage location';
     }
     
     setFormErrors(errors);
@@ -559,7 +817,7 @@ const Inventory: React.FC = () => {
       cost: finalCost,
       stock: computedTotalQuantity,
       lowStockThreshold: parseNumericString(formMinStockLevel),
-      defaultLocationId: formDefaultLocation || '',
+      defaultLocationId: formLocationAllocations[0]?.locationId || '',
       productsPerCarton: hasNoUnits ? null : parseNumericString(formProductsPerCarton || '0'),
       packageType: hasNoUnits ? null : formPackageType,
       packageCapacity: hasNoUnits ? null : parseNumericString(formProductsPerCarton || '0'),
@@ -570,13 +828,43 @@ const Inventory: React.FC = () => {
     };
 
     try {
+      let finalProductId = '';
       if (editingProduct) {
+        finalProductId = editingProduct.id;
         await updateProduct({ id: editingProduct.id, ...productPayload });
-        alert("SUCCESS: Product updated.");
       } else {
-        await addProduct(productPayload);
-        alert("SUCCESS: Product created.");
+        finalProductId = await addProduct(productPayload);
       }
+
+      // Sync and distribute stock levels across multiple locations
+      const existingProductStock = allStock.filter(s => s.productId === finalProductId);
+      const allocatedLocationIds = new Set(formLocationAllocations.map(a => a.locationId));
+
+      // 1. Clear stock to 0 for any location that was previously stocked but is no longer allocated
+      for (const ext of existingProductStock) {
+        if (ext.inventoryLocationId && !allocatedLocationIds.has(ext.inventoryLocationId)) {
+          await updateStock({
+            productId: finalProductId,
+            locationId: ext.inventoryLocationId,
+            quantity: 0,
+            lowStockThreshold: parseNumericString(formMinStockLevel)
+          });
+        }
+      }
+
+      // 2. Set/update stock for each allocated location
+      for (const alloc of formLocationAllocations) {
+        if (!alloc.locationId) continue;
+        const qtyNum = parseNumericString(alloc.quantity) * (alloc.conversionRate || 1);
+        await updateStock({
+          productId: finalProductId,
+          locationId: alloc.locationId,
+          quantity: qtyNum,
+          lowStockThreshold: parseNumericString(formMinStockLevel)
+        });
+      }
+
+      alert(editingProduct ? "SUCCESS: Product updated." : "SUCCESS: Product created.");
       setIsModalOpen(false);
       setEditingProduct(null);
     } catch (err: any) {
@@ -724,7 +1012,7 @@ const Inventory: React.FC = () => {
       <div style={style} className="flex items-center px-6 border-b border-slate-50 hover:bg-slate-50 transition-colors group">
          <div className="w-16 shrink-0 text-[10px] font-mono text-slate-400">#{product.id.substring(0, 6)}</div>
          <div className="flex-1 min-w-0 pr-4 font-black uppercase text-xs truncate">{product.name}</div>
-         <div className="w-32 shrink-0 font-mono text-xs">{product.barcode}</div>
+         <div className="w-32 shrink-0 font-mono text-xs">{cleanTo6Digits(product.barcode)}</div>
          <div className="w-24 shrink-0 text-xs font-bold text-slate-500">{product.category}</div>
          <div className="w-24 shrink-0 font-mono text-xs text-right whitespace-nowrap">{formatCurrency(product.price)}</div>
          <div className={cn("w-20 shrink-0 text-right font-mono text-xs font-black", product.stock <= product.lowStockThreshold ? 'text-rose-500' : 'text-slate-900')}>
@@ -860,8 +1148,41 @@ const Inventory: React.FC = () => {
         </div>
       </header>
 
-      {/* Toolbar & Filters */}
-      <div className="vibrant-card p-6 flex flex-col xl:flex-row items-center gap-6">
+      {/* Navigation Tabs */}
+      <div className="flex bg-slate-100 p-1.5 rounded-[2rem] max-w-md border border-slate-200/50">
+        <button 
+          onClick={() => setActiveTab('products')}
+          className={cn(
+            "flex-1 py-4.5 text-[10px] font-black uppercase tracking-[0.2em] rounded-[1.5rem] transition-all cursor-pointer text-center", 
+            activeTab === 'products' ? "bg-white text-slate-900 shadow-md" : "text-slate-400 hover:text-slate-700"
+          )}
+        >
+          All Products
+        </button>
+        <button 
+          onClick={() => setActiveTab('locations')}
+          className={cn(
+            "flex-1 py-4.5 text-[10px] font-black uppercase tracking-[0.2em] rounded-[1.5rem] transition-all cursor-pointer text-center", 
+            activeTab === 'locations' ? "bg-white text-slate-900 shadow-md" : "text-slate-400 hover:text-slate-700"
+          )}
+        >
+          Locations Stock
+        </button>
+        <button 
+          onClick={() => setActiveTab('transfers')}
+          className={cn(
+            "flex-1 py-4.5 text-[10px] font-black uppercase tracking-[0.2em] rounded-[1.5rem] transition-all cursor-pointer text-center", 
+            activeTab === 'transfers' ? "bg-white text-slate-900 shadow-md" : "text-slate-400 hover:text-slate-700"
+          )}
+        >
+          Transfers Log
+        </button>
+      </div>
+
+      {activeTab === 'products' && (
+        <>
+          {/* Toolbar & Filters */}
+          <div className="vibrant-card p-6 flex flex-col xl:flex-row items-center gap-6">
         <div className="relative flex-1 w-full group">
           <Search className="absolute left-6 top-1/2 -translate-y-1/2 h-5 w-5 text-slate-300 group-focus-within:text-emerald-500 transition-colors" />
           <input 
@@ -1052,8 +1373,8 @@ const Inventory: React.FC = () => {
                         </td>
                         
                         {/* A: Barcode */}
-                        <td className="p-3 border-r border-slate-200 font-mono text-slate-950 font-bold whitespace-nowrap" title={p.barcode || p.sku || '-'}>
-                          {String(p.barcode || p.sku || '-').slice(0, 6)}
+                        <td className="p-3 border-r border-slate-200 font-mono text-slate-950 font-bold whitespace-nowrap" title={cleanTo6Digits(p.barcode || p.sku || '-')}>
+                          {cleanTo6Digits(p.barcode || p.sku || '-')}
                         </td>
 
                         {/* B: Product Name */}
@@ -1291,7 +1612,523 @@ const Inventory: React.FC = () => {
           </button>
         </div>
       </div>
+    </>
+  )}
 
+      {activeTab === 'locations' && (
+        <div className="space-y-8 animate-in fade-in duration-200">
+          {/* Financial summary metrics calculated per location */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            {locations.map((loc) => {
+              // calculate valuation metrics for this location
+              let totalItemsCount = 0;
+              let totalValuationCost = 0;
+              let totalValuationRetail = 0;
+
+              products.forEach(p => {
+                const qty = stockMap.get(`${p.id}_${loc.id}`) ?? 0;
+                if (qty > 0) {
+                  totalItemsCount += qty;
+                  totalValuationCost += qty * (p.cost || 0);
+                  totalValuationRetail += qty * (p.price || 0);
+                }
+              });
+
+              return (
+                <div 
+                  key={`val-card-${loc.id}`} 
+                  onClick={() => setSelectedLocationId(loc.id)}
+                  className={cn(
+                    "vibrant-card p-6 flex flex-col justify-between cursor-pointer border-2 transition-all rounded-[2rem] bg-white",
+                    selectedLocationId === loc.id ? "border-blue-500 bg-blue-50/10 shadow-2xl" : "border-slate-100 hover:border-slate-200"
+                  )}
+                >
+                  <div>
+                    <div className="flex justify-between items-start mb-4">
+                      <div className="p-2.5 bg-blue-50 text-blue-600 rounded-xl"><Warehouse className="h-4 w-4" /></div>
+                      <span className="px-2.5 py-1 text-[8px] font-black uppercase tracking-wider rounded-lg border bg-green-50 border-green-200 text-green-700">{loc.status}</span>
+                    </div>
+                    <h3 className="font-extrabold text-slate-800 text-base uppercase tracking-tight">{loc.name}</h3>
+                    <p className="text-[9px] text-slate-400 font-bold mb-4 uppercase mt-0.5">{loc.description || 'Active storage level'}</p>
+                  </div>
+                  
+                  <div className="border-t border-slate-100 pt-4 mt-2 grid grid-cols-2 gap-4">
+                    <div className="flex flex-col">
+                      <span className="text-[8px] font-black uppercase text-slate-400 tracking-wider">Asset Value (Cost)</span>
+                      <span className="text-sm font-black font-mono text-slate-900">{formatCurrency(totalValuationCost)}</span>
+                    </div>
+                    <div className="flex flex-col">
+                      <span className="text-[8px] font-black uppercase text-slate-400 tracking-wider">Sales Worth</span>
+                      <span className="text-sm font-black font-mono text-emerald-600">{formatCurrency(totalValuationRetail)}</span>
+                    </div>
+                  </div>
+                  
+                  <div className="mt-3 text-[9px] font-bold text-slate-400 italic">
+                    {totalItemsCount} unit(s) currently stocked
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Table display of products at selected location */}
+          <div className="vibrant-card p-6 space-y-6">
+            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-slate-100/50 pb-6">
+              <div>
+                <h3 className="font-black uppercase text-lg text-slate-900">
+                  Stock Sheet: {locations.find(l => l.id === selectedLocationId)?.name || 'Default Storage'}
+                </h3>
+                <p className="text-slate-400 text-[10px] uppercase font-bold tracking-wider mt-0.5">
+                  Generate offline report sheet or execute audits for physical stock take
+                </p>
+              </div>
+              
+              <div className="flex gap-2 w-full sm:w-auto">
+                <button
+                  onClick={() => exportLocationReportExcel(selectedLocationId)}
+                  className="flex-1 sm:flex-none flex items-center justify-center space-x-2 bg-emerald-50 text-emerald-700 border border-emerald-200 px-4 py-3 rounded-xl text-[10px] font-black uppercase tracking-wider hover:bg-emerald-100 transition-all cursor-pointer"
+                >
+                  <FileSpreadsheet className="h-3.5 w-3.5" />
+                  <span>Download Excel</span>
+                </button>
+                <button
+                  onClick={() => exportLocationReportPDF(selectedLocationId)}
+                  className="flex-1 sm:flex-none flex items-center justify-center space-x-2 bg-rose-50 text-rose-700 border border-rose-200 px-4 py-3 rounded-xl text-[10px] font-black uppercase tracking-wider hover:bg-rose-100 transition-all cursor-pointer"
+                >
+                  <FileText className="h-3.5 w-3.5" />
+                  <span>Download PDF Report</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Search and Filters inside Stock Sheet */}
+            <div className="flex flex-col sm:flex-row gap-4 items-center bg-slate-50 p-4 rounded-2xl border border-slate-100">
+              <div className="relative flex-1 w-full">
+                <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
+                <input 
+                  type="text" 
+                  placeholder="Search stock sheet by name, SKU or barcode..." 
+                  value={locationsSearch}
+                  onChange={(e) => setLocationsSearch(e.target.value)}
+                  className="w-full pl-10 pr-4 py-3 bg-white border border-slate-200 rounded-xl text-xs focus:outline-none focus:border-blue-300 font-bold text-slate-800 placeholder:text-slate-400 uppercase"
+                />
+              </div>
+              <div className="w-full sm:w-48">
+                <select
+                  value={locationsCategory}
+                  onChange={(e) => setLocationsCategory(e.target.value)}
+                  className="w-full px-3 py-3 bg-white border border-slate-200 rounded-xl text-xs font-black uppercase text-slate-700 focus:outline-none focus:border-blue-300"
+                >
+                  <option value="ALL">All Categories</option>
+                  {uniqueCategoriesFromProducts.map(cat => (
+                    <option key={cat} value={cat}>{cat}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="overflow-x-auto rounded-[2rem] border border-slate-100 bg-white">
+              <table className="w-full text-left font-sans text-xs">
+                <thead>
+                  <tr className="bg-slate-50 uppercase text-[9px] font-black tracking-widest text-slate-400 border-b border-slate-100">
+                    <th className="p-4 text-center">#</th>
+                    <th className="p-4">SKU / Barcode</th>
+                    <th className="p-4">Product Name</th>
+                    <th className="p-4">Category</th>
+                    <th className="p-4 text-right">Cost Price</th>
+                    <th className="p-4 text-right">Selling Price</th>
+                    <th className="p-4 text-center">Location Quantity</th>
+                    <th className="p-4 text-center">Packages Remaining</th>
+                    <th className="p-4 text-center">Status</th>
+                    <th className="p-4 text-center">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-50">
+                  {paginatedLocProducts.map((p, idx) => {
+                    const localQty = stockMap.get(`${p.id}_${selectedLocationId}`) ?? 0;
+                    const threshold = p.lowStockThreshold || 10;
+                    let statusColor = "bg-green-50 text-green-700 border-green-200";
+                    let statusLabel = "Ok";
+
+                    if (localQty === 0) {
+                      statusColor = "bg-rose-50 text-rose-700 border-rose-200";
+                      statusLabel = "Out of Stock";
+                    } else if (localQty <= threshold) {
+                      statusColor = "bg-amber-50 text-amber-700 border-amber-200";
+                      statusLabel = "Low Stock";
+                    }
+
+                    return (
+                      <tr key={`loc-sh-p-${p.id}`} className="hover:bg-slate-50/35 transition-colors">
+                        <td className="p-4 text-center font-bold text-slate-400">{((locationsPage - 1) * LOC_ITEMS_PER_PAGE) + idx + 1}</td>
+                        <td className="p-4 font-mono text-[10px] whitespace-nowrap">
+                          <div>SKU: {cleanTo6Digits(p.sku) || 'N/A'}</div>
+                          <div className="text-slate-400 mt-0.5">BC: {cleanTo6Digits(p.barcode) || 'N/A'}</div>
+                        </td>
+                        <td className="p-4 font-bold text-slate-900 uppercase tracking-tight">{p.name}</td>
+                        <td className="p-4 font-bold uppercase text-[10px] text-slate-500">{p.category || 'Uncategorized'}</td>
+                        <td className="p-4 text-right font-mono font-bold text-slate-500">{formatCurrency(p.cost || 0)}</td>
+                        <td className="p-4 text-right font-mono font-bold text-slate-900">{formatCurrency(p.price || 0)}</td>
+                        <td className="p-4 text-center font-mono font-black text-xs leading-none">
+                          <span className={cn(
+                            "px-2.5 py-1 rounded-lg text-[10px] font-black border",
+                            localQty === 0 ? "bg-rose-50 border-rose-200 text-rose-600" : 
+                            localQty <= threshold ? "bg-amber-50 border-amber-200 text-amber-600" : 
+                            "bg-emerald-50 border-emerald-200 text-emerald-600"
+                          )}>
+                            {localQty} Unit(s)
+                          </span>
+                        </td>
+                        <td className="p-4 text-center">
+                          {(() => {
+                            const capacity = p.packageCapacity || p.productsPerCarton || 0;
+                            const pkgName = p.packageType || 'Carton';
+                            if (capacity > 1) {
+                              const fullPkgs = Math.floor(localQty / capacity);
+                              const remainingUnits = localQty % capacity;
+                              if (fullPkgs === 0 && remainingUnits === 0) {
+                                return <span className="text-slate-300 font-medium text-[10px]">-</span>;
+                              }
+                              return (
+                                <div className="flex flex-col items-center justify-center">
+                                  <span className="font-sans font-black text-indigo-600 text-[11px] leading-tight bg-indigo-50/50 px-2.5 py-1 rounded border border-indigo-100/50">
+                                    {fullPkgs} {pkgName}{fullPkgs !== 1 ? 's' : ''}
+                                  </span>
+                                  {remainingUnits > 0 && (
+                                    <span className="text-[9px] text-slate-400 font-bold font-sans mt-1">
+                                      + {remainingUnits} pcs
+                                    </span>
+                                  )}
+                                </div>
+                              );
+                            }
+                            return <span className="text-slate-400 italic text-[9px] font-semibold uppercase tracking-tight">No pack qty</span>;
+                          })()}
+                        </td>
+                        <td className="p-4 text-center">
+                          <span className={cn("px-2.5 py-1 border text-[8px] font-black uppercase tracking-wider rounded-lg", statusColor)}>
+                            {statusLabel}
+                          </span>
+                        </td>
+                        <td className="p-4 text-center">
+                          <button
+                            onClick={() => {
+                              setStocktakeProductId(p.id);
+                              setStocktakeCount(String(localQty));
+                            }}
+                            className="bg-slate-900 hover:bg-black text-white text-[9px] font-black uppercase tracking-widest px-4 py-2.5 rounded-xl active:scale-95 transition-all cursor-pointer"
+                          >
+                            Audited Count
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {paginatedLocProducts.length === 0 && (
+                    <tr>
+                      <td colSpan={10} className="p-20 text-center text-slate-300 italic">No products matched current filters or exist in this location.</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Pagination Controls */}
+            {filteredLocProducts.length > LOC_ITEMS_PER_PAGE && (
+              <div className="flex flex-col sm:flex-row justify-between items-center gap-4 bg-slate-50 px-6 py-4 rounded-2xl border border-slate-100 text-xs text-slate-500 font-bold">
+                <span>
+                  Showing <strong className="font-bold">{((locationsPage - 1) * LOC_ITEMS_PER_PAGE) + 1}</strong> to <strong className="font-bold">{Math.min(locationsPage * LOC_ITEMS_PER_PAGE, filteredLocProducts.length)}</strong> of <strong className="font-bold">{filteredLocProducts.length}</strong> products
+                </span>
+                <div className="flex gap-2">
+                  <button 
+                    disabled={locationsPage === 1}
+                    onClick={() => setLocationsPage(prev => Math.max(1, prev - 1))}
+                    className="px-4 py-2 bg-white border border-slate-200 rounded-lg text-[10px] font-black uppercase disabled:opacity-50 hover:bg-slate-50 transition-all cursor-pointer shadow-sm"
+                  >
+                    Prev
+                  </button>
+                  <button 
+                    disabled={locationsPage === Math.ceil(filteredLocProducts.length / LOC_ITEMS_PER_PAGE)}
+                    onClick={() => setLocationsPage(prev => Math.min(Math.ceil(filteredLocProducts.length / LOC_ITEMS_PER_PAGE), prev + 1))}
+                    className="px-4 py-2 bg-slate-900 text-white rounded-lg text-[10px] font-black uppercase disabled:opacity-50 hover:bg-black transition-all cursor-pointer shadow-sm"
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'transfers' && (
+        <div className="space-y-8 animate-in fade-in duration-200">
+          <div className="vibrant-card p-8 flex flex-col md:flex-row justify-between items-start md:items-center gap-6 border-b-4 border-slate-900 bg-white">
+            <div>
+              <h2 className="text-3xl font-black uppercase tracking-tight text-slate-900">Warehouse ←→ Supermarket Relocator</h2>
+              <p className="text-slate-400 font-bold text-[10px] uppercase tracking-widest mt-1">
+                Record and execute real-time physical stock distribution securely
+              </p>
+            </div>
+            <button
+              onClick={() => setIsTransferModalOpen(true)}
+              className="px-8 py-5 bg-blue-700 hover:bg-blue-800 text-white rounded-3xl font-black uppercase tracking-wider text-xs shadow-xl shadow-blue-700/20 active:scale-95 transition-all flex items-center gap-2 cursor-pointer h-[58px]"
+            >
+              <ArrowLeftRight className="h-4 w-4" />
+              <span>Initiate Stock Transfer</span>
+            </button>
+          </div>
+
+          <div className="vibrant-card p-6 bg-white">
+            <h3 className="font-black text-[10px] uppercase text-slate-400 mb-4 tracking-widest">Historical Transfer Audit Trail</h3>
+            <div className="overflow-x-auto rounded-[2rem] border border-slate-100 bg-white">
+              <table className="w-full text-left font-sans text-xs">
+                <thead>
+                  <tr className="bg-slate-50 uppercase text-[9px] font-black tracking-widest text-slate-400 border-b border-slate-100">
+                    <th className="p-4 text-center">#</th>
+                    <th className="p-4">Date & Time</th>
+                    <th className="p-4">Product Name</th>
+                    <th className="p-4">From Location</th>
+                    <th className="p-4">→ To Location</th>
+                    <th className="p-4 text-center">Quantity</th>
+                    <th className="p-4">Transferred By</th>
+                    <th className="p-4">Notes</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-50">
+                  {transfers.map((t, idx) => {
+                    const fromLocName = locations.find(l => l.id === t.fromLocationId)?.name || 'Secondary Source';
+                    const toLocName = locations.find(l => l.id === t.toLocationId)?.name || 'Secondary Destination';
+                    const dateFormatted = t.createdAt 
+                      ? new Date((t.createdAt as any).seconds * 1000).toLocaleString() 
+                      : 'Recently Added';
+
+                    return (
+                      <tr key={`tr-log-${t.id || idx}`} className="hover:bg-slate-50/40 transition-colors">
+                        <td className="p-4 text-center font-bold text-slate-400">{idx + 1}</td>
+                        <td className="p-4 font-mono text-[10px] whitespace-nowrap text-slate-500">{dateFormatted}</td>
+                        <td className="p-4 font-bold text-slate-900 uppercase tracking-tight">
+                          {products.find(p => p.id === t.productId)?.name || 'Unknown Product'}
+                        </td>
+                        <td className="p-4 font-extrabold text-[#D9381E] uppercase text-[10px]">{fromLocName}</td>
+                        <td className="p-4 font-extrabold text-blue-700 uppercase text-[10px]">
+                          <span className="inline-flex items-center gap-1.5">
+                            <span className="text-slate-400 font-normal">→</span> {toLocName}
+                          </span>
+                        </td>
+                        <td className="p-4 text-center font-mono font-black text-sm text-slate-900">{t.quantity} Units</td>
+                        <td className="p-4 font-bold text-slate-600 uppercase text-[10px]">{t.transferredBy || 'Admin'}</td>
+                        <td className="p-4 italic text-slate-400 max-w-[180px] truncate">{t.notes || 'Routine distribution'}</td>
+                      </tr>
+                    );
+                  })}
+                  {transfers.length === 0 && (
+                    <tr>
+                      <td colSpan={8} className="p-20 text-center text-slate-300 italic uppercase font-bold text-[10px] tracking-widest">
+                        No background transfers recorded yet.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Stock Transfer creation modal dialog popup */}
+      <Dialog open={isTransferModalOpen} onOpenChange={setIsTransferModalOpen}>
+        <DialogContent className="max-w-md rounded-2xl p-8 bg-white border border-slate-100 shadow-2xl font-sans">
+          <DialogHeader className="mb-4">
+            <DialogTitle className="text-xl font-black uppercase text-slate-950 tracking-tight flex items-center gap-2">
+              <ArrowLeftRight className="h-5 w-5 text-blue-700" />
+              <span>Stock Relocation</span>
+            </DialogTitle>
+            <DialogDescription className="text-xs text-slate-400">
+              Deduct stock atomically from warehouse storage areas and balance it inside active sales floors.
+            </DialogDescription>
+          </DialogHeader>
+
+          <form onSubmit={handleStockTransferSubmit} className="space-y-5">
+            {transferError && (
+              <div className="p-3 bg-rose-50 border border-rose-100 text-rose-700 rounded-xl text-[10px] font-black uppercase tracking-wider leading-relaxed">
+                ● TRANSFER ERROR: {transferError}
+              </div>
+            )}
+
+            <div className="flex flex-col">
+              <label className="text-[10px] font-black uppercase text-slate-500 mb-1">Select Product *</label>
+              <select
+                required
+                value={transferProductId}
+                onChange={(e) => {
+                  setTransferProductId(e.target.value);
+                  // auto select the first location with stock > 0 if available!
+                  const pId = e.target.value;
+                  const validSrc = locations.find(l => (stockMap.get(`${pId}_${l.id}`) ?? 0) > 0);
+                  if (validSrc) setTransferFromLocId(validSrc.id);
+                }}
+                className="h-10 border border-[#CCCCCC] focus:border-[#007AFF] bg-white rounded-xl px-3 text-xs uppercase font-bold outline-none"
+              >
+                <option value="">-- Choose Product to Move --</option>
+                {products.map(p => (
+                  <option key={p.id} value={p.id}>{p.name} (Total In Stock: {p.stock || 0})</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div className="flex flex-col">
+                <label className="text-[10px] font-black uppercase text-slate-500 mb-1">From Location *</label>
+                <select
+                  required
+                  value={transferFromLocId}
+                  onChange={(e) => setTransferFromLocId(e.target.value)}
+                  className="h-10 border border-[#CCCCCC] focus:border-[#007AFF] bg-white rounded-xl px-3 text-xs uppercase font-bold outline-none"
+                >
+                  <option value="">-- Source --</option>
+                  {locations.map(l => {
+                    const srcQty = transferProductId ? (stockMap.get(`${transferProductId}_${l.id}`) ?? 0) : 0;
+                    return (
+                      <option key={l.id} value={l.id}>{l.name} ({srcQty} Avail)</option>
+                    );
+                  })}
+                </select>
+              </div>
+
+              <div className="flex flex-col">
+                <label className="text-[10px] font-black uppercase text-slate-500 mb-1">To Location *</label>
+                <select
+                  required
+                  value={transferToLocId}
+                  onChange={(e) => setTransferToLocId(e.target.value)}
+                  className="h-10 border border-[#CCCCCC] focus:border-[#007AFF] bg-white rounded-xl px-3 text-xs uppercase font-bold outline-none"
+                >
+                  <option value="">-- Destination --</option>
+                  {locations.map(l => (
+                    <option key={l.id} value={l.id}>{l.name}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="flex flex-col">
+              <label className="text-[10px] font-black uppercase text-slate-500 mb-1 font-sans">Transfer Quantity *</label>
+              <input
+                type="number"
+                step="any"
+                required
+                min="0.01"
+                placeholder="e.g. 15"
+                value={transferQty}
+                onChange={e => setTransferQty(e.target.value)}
+                className="h-10 border border-[#CCCCCC] focus:border-[#007AFF] bg-white rounded-xl px-3 text-xs font-bold outline-none font-sans"
+              />
+            </div>
+
+            <div className="flex flex-col">
+              <label className="text-[10px] font-black uppercase text-slate-500 mb-1 font-sans">Audit / Reference Notes</label>
+              <input
+                type="text"
+                placeholder="e.g. Move backstore crate to Shop Fridge floor"
+                value={transferNotes}
+                onChange={e => setTransferNotes(e.target.value)}
+                className="h-10 border border-[#CCCCCC] focus:border-[#007AFF] bg-white rounded-xl px-3 text-xs font-bold outline-none font-sans"
+              />
+            </div>
+
+            <div className="flex gap-4 pt-2">
+              <button
+                type="button"
+                onClick={() => setIsTransferModalOpen(false)}
+                className="flex-1 py-4 text-[10px] font-black uppercase tracking-widest text-slate-400 hover:text-slate-900"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={isTransferring}
+                className="flex-1 py-4 bg-blue-700 hover:bg-blue-800 disabled:bg-slate-300 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-lg shadow-blue-500/10 cursor-pointer"
+              >
+                {isTransferring ? 'Relocating...' : 'Relocate Stock'}
+              </button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Physical Stock Audit count popup tool */}
+      <Dialog open={stocktakeProductId !== null} onOpenChange={(open) => !open && setStocktakeProductId(null)}>
+        <DialogContent className="max-w-sm rounded-[2rem] p-8 bg-white border border-slate-100 shadow-2xl font-sans">
+          <DialogHeader className="mb-4 text-center flex flex-col items-center">
+            <div className="h-12 w-12 rounded-full bg-slate-100 flex items-center justify-center text-slate-800 mb-3"><ClipboardCheck className="h-5 w-5" /></div>
+            <DialogTitle className="text-xl font-black uppercase text-slate-950 tracking-tight leading-none">
+              Physical Audit Count
+            </DialogTitle>
+            <DialogDescription className="text-slate-400 text-[10px] uppercase font-bold mt-1.5 max-w-[240px] leading-relaxed text-center">
+              Updating details for "{products.find(p => p.id === stocktakeProductId)?.name}" in "{locations.find(l => l.id === selectedLocationId)?.name || 'Default Storage'}"
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-5">
+            <div className="flex flex-col text-center bg-slate-50 p-4 rounded-2xl border border-slate-100">
+              <span className="text-[10px] font-black uppercase text-slate-400 mb-1">Previous Tracked Count</span>
+              <span className="text-2xl font-black font-mono text-slate-800">
+                {stocktakeProductId ? (stockMap.get(`${stocktakeProductId}_${selectedLocationId}`) ?? 0) : 0} Units
+              </span>
+            </div>
+
+            <div className="flex flex-col">
+              <label className="text-[10px] font-black uppercase text-slate-500 mb-1.5 text-center">New Actual Audited count *</label>
+              <input
+                type="number"
+                required
+                min="0"
+                placeholder="e.g. 50"
+                value={stocktakeCount}
+                onChange={e => setStocktakeCount(e.target.value)}
+                className="h-12 border border-[#CCCCCC] focus:border-[#007AFF] text-center bg-white rounded-xl text-lg font-mono font-black uppercase outline-none"
+              />
+            </div>
+
+            <div className="flex gap-4 pt-2">
+              <button
+                type="button"
+                onClick={() => setStocktakeProductId(null)}
+                className="flex-1 py-4 text-[10px] font-black uppercase tracking-widest text-slate-400 hover:text-slate-900"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    const parsedCount = parseInt(stocktakeCount);
+                    if (isNaN(parsedCount) || parsedCount < 0) {
+                      throw new Error('Please enter a valid count index >= 0');
+                    }
+                    if (stocktakeProductId) {
+                      await updateStock({
+                        productId: stocktakeProductId,
+                        locationId: selectedLocationId,
+                        quantity: parsedCount,
+                        lowStockThreshold: 10
+                      });
+                      setStocktakeProductId(null);
+                    }
+                  } catch (err: any) {
+                    alert(err.message || 'Audit count adjustment failed');
+                  }
+                }}
+                className="flex-1 py-4 bg-slate-950 hover:bg-black text-white rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-lg cursor-pointer"
+              >
+                Adjust Stock
+              </button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+      
       {/* Product Modal */}
       <Dialog open={isModalOpen} onOpenChange={setIsModalOpen}>
         <DialogContent className="max-w-4xl rounded-[3rem] p-8 bg-white flex flex-col max-h-[90vh] overflow-y-auto custom-scrollbar font-sans border-0 shadow-2xl">
@@ -1340,7 +2177,7 @@ const Inventory: React.FC = () => {
                     className="h-10 border border-[#CCCCCC] focus:border-[#007AFF] rounded-lg px-3 bg-white text-sm outline-none w-full font-sans uppercase"
                   />
                   <span className="text-[#8E8E93] text-xs font-normal mt-1 leading-normal">
-                    Leave blank if you don't use SKUs. We'll prevent duplicates using the product name.
+                    Optional. Auto-generated if left blank. Prevents duplicates.
                   </span>
                 </div>
 
@@ -1370,21 +2207,6 @@ const Inventory: React.FC = () => {
                       <option key={cat} value={cat}>{cat}</option>
                     ))}
                     <option value="+++NEW+++" className="font-bold text-blue-600 font-sans">+ Create New Category...</option>
-                  </select>
-                </div>
-
-                {/* Field Extra: Default Location */}
-                <div className="flex flex-col">
-                  <label className="text-sm font-semibold text-[#333333] mb-2">Default Storage Warehouse / Location (Optional)</label>
-                  <select
-                    value={formDefaultLocation}
-                    onChange={e => setFormDefaultLocation(e.target.value)}
-                    className="h-10 border border-[#CCCCCC] focus:border-[#007AFF] rounded-lg px-3 bg-white text-sm outline-none w-full font-sans cursor-pointer"
-                  >
-                    <option value="">No Default Storage Assigned</option>
-                    {locations.map(loc => (
-                      <option key={loc.id} value={loc.id}>{loc.name}</option>
-                    ))}
                   </select>
                 </div>
               </div>
@@ -1433,6 +2255,7 @@ const Inventory: React.FC = () => {
                       className="h-10 border border-[#CCCCCC] focus:border-[#007AFF] rounded-lg px-3 bg-white text-sm outline-none w-full font-bold"
                     >
                       <option value="Carton">Carton</option>
+                      <option value="Bag">Bag</option>
                       <option value="Crate">Crate</option>
                       <option value="Pack">Pack</option>
                       <option value="Roll">Roll</option>
@@ -1456,7 +2279,7 @@ const Inventory: React.FC = () => {
                   </div>
                 </div>
                 <div className="text-[#8E8E93] text-xs font-normal mt-1 leading-normal">
-                  Specify how many base units make up a full {formPackageType}. This allows easy variation conversions.
+                  Set number of product per package type.
                 </div>
 
                 {/* Field 5: Selling Price */}
@@ -1504,18 +2327,15 @@ const Inventory: React.FC = () => {
 
                   <div className="flex flex-col">
                     <label className="text-sm font-semibold text-[#333333] mb-2 flex items-center">
-                      Quantity <span className="text-[#FF3B30] ml-1">*</span>
+                      Quantity <span className="text-slate-400 ml-1">(Computed)</span>
                     </label>
                     <input 
-                      required 
+                      readOnly 
                       type="text"
                       value={primaryQuantity} 
-                      onChange={e => handleUpdatePrimaryQuantity(e.target.value)} 
-                      placeholder="Enter quantity"
-                      className={cn(
-                        "h-10 border rounded-lg px-3 bg-white text-sm outline-none transition-colors w-full font-mono font-bold",
-                        formErrors.quantity ? "border-[#FF3B30]" : "border-[#CCCCCC] focus:border-[#007AFF]"
-                      )}
+                      placeholder="Location Sum"
+                      className="h-10 border border-[#CCCCCC] rounded-lg px-3 bg-slate-50 text-sm outline-none w-full font-mono font-bold text-slate-500 cursor-not-allowed"
+                      title="This is the automatically computed sum of the location stock levels defined above."
                     />
                   </div>
                 </div>
@@ -1540,7 +2360,7 @@ const Inventory: React.FC = () => {
                     )}
                   />
                   <span className="text-[#8E8E93] text-xs font-normal mt-1 leading-normal">
-                    Set this based on the product's typical demand and reorder time
+                    Low stock alert threshold.
                   </span>
                   {formErrors.minStockLevel && (
                     <span className="text-[#FF3B30] text-xs font-medium mt-1">{formErrors.minStockLevel}</span>
@@ -1623,6 +2443,104 @@ const Inventory: React.FC = () => {
                     </div>
                   )}
                 </div>
+              )}
+            </div>
+
+            {/* SECTION: Location Stock Levels */}
+            <div className="border-b border-[#E5E5EA] pb-6 mb-6">
+              <div className="flex justify-between items-center mb-4">
+                <div>
+                  <h3 className="text-lg font-bold text-[#000000]">Location Stock Levels</h3>
+                  <span className="text-xs text-[#8E8E93] font-sans font-medium block mt-0.5">
+                    Set other location e.g warehouse.
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const nextLocId = locations.find(l => !formLocationAllocations.some(a => a.locationId === l.id))?.id || locations[0]?.id || 'default-storage';
+                    setFormLocationAllocations(prev => [
+                      ...prev,
+                      { locationId: nextLocId, quantity: '', unitName: formBaseUnit || 'Piece', conversionRate: 1 }
+                    ]);
+                  }}
+                  className="py-1.5 px-3 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-sans text-xs font-bold rounded-lg transition-colors flex items-center gap-1 cursor-pointer select-none border border-indigo-100 font-bold"
+                >
+                  <Plus className="h-3 w-3" /> Add Location
+                </button>
+              </div>
+
+              <div className="space-y-2.5 max-h-56 overflow-y-auto pr-1">
+                {formLocationAllocations.map((alloc, idx) => (
+                  <div key={`alloc-row-${idx}`} className="flex items-center gap-2 bg-slate-50/50 p-2 rounded-xl border border-slate-100/80">
+                    <div className="flex-1 min-w-[130px]">
+                      <label className="text-[9px] font-black uppercase text-slate-400 block mb-1">Storage Location</label>
+                      <select
+                        value={alloc.locationId}
+                        onChange={e => {
+                          const updated = [...formLocationAllocations];
+                          updated[idx].locationId = e.target.value;
+                          setFormLocationAllocations(updated);
+                        }}
+                        className="h-10 border border-[#CCCCCC] focus:border-[#007AFF] rounded-lg px-2.5 bg-white text-xs outline-none w-full font-sans cursor-pointer font-bold text-slate-800"
+                      >
+                        {locations.map((loc, index) => (
+                          <option key={`alloc-loc-${loc.id || index}-${index}`} value={loc.id}>
+                            {loc.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="w-14 shrink-0">
+                      <label className="text-[9px] font-black uppercase text-slate-400 block mb-1">Qty</label>
+                      <input
+                        type="text"
+                        placeholder="Qty"
+                        value={alloc.quantity}
+                        onChange={e => {
+                          const updated = [...formLocationAllocations];
+                          updated[idx].quantity = formatNumericInput(e.target.value);
+                          setFormLocationAllocations(updated);
+                        }}
+                        className="h-10 border border-[#CCCCCC] focus:border-[#007AFF] rounded-lg p-2 bg-white text-xs outline-none w-full font-mono font-bold text-slate-800 text-right"
+                      />
+                    </div>
+
+                    <div className="w-24 shrink-0">
+                      <label className="text-[9px] font-black uppercase text-slate-400 block mb-1">Unit</label>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveAllocIndexForUnitSelect(idx);
+                        }}
+                        className="h-10 border border-[#CCCCCC] focus:border-[#007AFF] rounded-lg px-2 text-xs text-left w-full font-sans font-bold text-[#00529B] flex items-center justify-between bg-white"
+                      >
+                        <span className="truncate">{alloc.unitName || formBaseUnit || 'Piece'}</span>
+                        <ChevronDown className="h-3.5 w-3.5 text-[#8E8E93] shrink-0 ml-0.5" />
+                      </button>
+                    </div>
+
+                    {formLocationAllocations.length > 1 && (
+                      <div className="flex flex-col justify-end h-full pt-4">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setFormLocationAllocations(prev => prev.filter((_, i) => i !== idx));
+                          }}
+                          className="p-2.5 border border-slate-200 hover:border-rose-200 hover:bg-rose-50 rounded-lg text-rose-500 hover:text-rose-700 transition-colors shrink-0 cursor-pointer"
+                          title="Remove Allocation row"
+                        >
+                          <Trash className="h-4 w-4" />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              {formErrors.locations && (
+                <span className="text-[#FF3B30] text-[#FF3B30] text-xs font-medium mt-2 block">{formErrors.locations}</span>
               )}
             </div>
 
@@ -1798,6 +2716,87 @@ const Inventory: React.FC = () => {
         </div>
       )}
 
+      {/* Stocking Unit Selection Custom Modal for Location Allocations */}
+      {activeAllocIndexForUnitSelect !== null && (
+        <div className="fixed inset-0 z-[10000] flex items-center justify-center p-4 bg-black/45">
+          <div className="bg-white rounded-none border border-[#E5E5EA] max-w-md w-full p-6 space-y-6 font-sans shadow-none">
+            <div className="flex items-center justify-between border-b border-[#E5E5EA] pb-3">
+              <span className="text-base font-bold text-black font-sans leading-none">
+                Select Stocking Unit
+              </span>
+              <button
+                type="button"
+                onClick={() => setActiveAllocIndexForUnitSelect(null)}
+                className="p-1 hover:bg-[#F2F2F7] rounded-lg text-black transition-colors"
+                aria-label="Close"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="space-y-4 max-h-[350px] overflow-y-auto pr-1">
+              {UNIT_CATEGORIES.map(category => (
+                <div key={`alloc-cat-${category.name}`} className="space-y-2">
+                  <span className="text-xs uppercase font-bold text-[#8E8E93] block select-none">
+                    {category.name}
+                  </span>
+                  <div className="flex flex-wrap gap-2 flex-wrap">
+                    {category.units.map(unit => {
+                      const currentSelected = formLocationAllocations[activeAllocIndexForUnitSelect]?.unitName === unit;
+
+                      return (
+                        <button
+                          key={`alloc-unit-btn-${unit}`}
+                          type="button"
+                          onClick={() => {
+                            const updated = [...formLocationAllocations];
+                            updated[activeAllocIndexForUnitSelect].unitName = unit;
+                            
+                            // Determine correct conversion rate
+                            let rate = 1;
+                            if (unit.toLowerCase() === (formBaseUnit || 'Piece').toLowerCase()) {
+                              rate = 1;
+                            } else if (formPackageType && unit.toLowerCase() === formPackageType.toLowerCase()) {
+                              rate = parseNumericString(formProductsPerCarton || '12');
+                            } else {
+                              const matchedVar = additionalUnits.find(u => u.unitType?.toLowerCase() === unit.toLowerCase());
+                              if (matchedVar) {
+                                rate = parseNumericString(matchedVar.conversionRate || '1');
+                              } else {
+                                const uLower = unit.toLowerCase();
+                                if (uLower === 'carton') rate = parseNumericString(formProductsPerCarton || '12');
+                                else if (uLower === 'crate') rate = parseNumericString(formProductsPerCarton || '24');
+                                else if (uLower === 'dozen') rate = 12;
+                                else if (uLower === 'pack') rate = parseNumericString(formProductsPerCarton || '6');
+                                else if (uLower === 'roll' || uLower === 'bundle' || uLower === 'coil' || uLower === 'bag') {
+                                  rate = parseNumericString(formProductsPerCarton || '10');
+                                }
+                              }
+                            }
+                            
+                            updated[activeAllocIndexForUnitSelect].conversionRate = rate;
+                            setFormLocationAllocations(updated);
+                            setActiveAllocIndexForUnitSelect(null);
+                          }}
+                          className={cn(
+                            "px-3 py-1.5 rounded-full text-xs font-semibold border transition-colors select-none font-sans",
+                            currentSelected 
+                              ? "bg-[#007AFF] border-[#007AFF] text-white font-bold" 
+                              : "bg-white border-[#CCCCCC] text-[#333333] hover:bg-[#F2F2F7]"
+                          )}
+                        >
+                          {unit}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Add New Batch Custom Modal */}
       {isAddBatchModalOpen && (
         <div className="fixed inset-0 z-[10000] flex items-center justify-center p-4 bg-black/45">
@@ -1933,15 +2932,47 @@ const Inventory: React.FC = () => {
               <div className="space-y-2">
                 <span className="text-xs font-black uppercase text-slate-400">Active Storage Locations</span>
                 <div className="space-y-2 max-h-[180px] overflow-y-auto pr-1">
-                  {locations.map(loc => (
-                    <div key={loc.id} className="flex justify-between items-center p-3 bg-slate-50 border border-slate-100 rounded-xl hover:bg-slate-100 transition-colors">
-                      <div>
-                        <span className="font-bold text-slate-900 uppercase text-xs">{loc.name}</span>
-                        {loc.description && <p className="text-[10px] text-slate-400 mt-0.5">{loc.description}</p>}
+                  {locations.map((loc, index) => {
+                    if (loc.id === '' || loc.id === undefined || loc.id === null) {
+                      console.warn("TEMPORARY KEY DETECTOR:", { file: "Inventory.tsx", component: "ManageStorageLocations", keyVal: loc.id, index });
+                    }
+                    const isDefault = loc.isDefaultSalesSource === true;
+                    return (
+                      <div key={`inv-loc-act-${loc.id || index}-${index}`} className="flex justify-between items-center p-3 bg-slate-50 border border-slate-100 rounded-xl hover:bg-slate-100 transition-colors">
+                        <div>
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="font-bold text-slate-900 uppercase text-xs">{loc.name}</span>
+                            {isDefault && (
+                              <span className="px-1.5 py-0.5 text-[8px] font-black uppercase tracking-wider rounded bg-indigo-50 border border-indigo-200 text-indigo-700">Default Source</span>
+                            )}
+                          </div>
+                          {loc.description && <p className="text-[10px] text-slate-400 mt-0.5">{loc.description}</p>}
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          {!isDefault && loc.id !== 'default-storage' && (
+                            <button
+                              type="button"
+                              onClick={() => handleSetDefaultSalesSource(loc.id)}
+                              className="px-2 py-1 text-[8px] font-black uppercase tracking-wider rounded border border-slate-200 bg-white hover:bg-slate-50 text-slate-600 transition-all cursor-pointer"
+                            >
+                              Set Default
+                            </button>
+                          )}
+                          <span className="px-2.5 py-1 text-[8px] font-black uppercase tracking-wider rounded-lg border bg-green-50 border-green-200 text-green-700">{loc.status}</span>
+                          {loc.id !== 'default-storage' && (
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteLocation(loc.id, loc.name)}
+                              className="p-1.5 hover:bg-rose-50 border border-transparent hover:border-rose-100 text-[#FF3B30] rounded-lg transition-colors select-none cursor-pointer"
+                              title="Delete Location"
+                            >
+                              <Trash className="h-3.5 w-3.5" />
+                            </button>
+                          )}
+                        </div>
                       </div>
-                      <span className="px-2.5 py-1 text-[8px] font-black uppercase tracking-wider rounded-lg border bg-green-50 border-green-200 text-green-700">{loc.status}</span>
-                    </div>
-                  ))}
+                    );
+                  })}
                   {locations.length === 0 && (
                     <p className="text-xs text-slate-400 italic text-center py-4">No custom locations added yet.</p>
                   )}

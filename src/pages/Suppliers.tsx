@@ -704,7 +704,7 @@ const Suppliers: React.FC = () => {
                 <div className="space-y-6">
                   {groupedTransactions.map((group, idx) => (
                     <motion.div
-                      key={group.reference}
+                      key={group.reference || `group-tx-${idx}`}
                       initial={{ opacity: 0, y: 10 }}
                       animate={{ opacity: 1, y: 0 }}
                       transition={{ delay: idx * 0.05 }}
@@ -924,14 +924,18 @@ const Suppliers: React.FC = () => {
               <div className="col-span-full py-20 text-center bg-white border border-slate-100 rounded-[3rem] flex flex-col items-center justify-center p-8 space-y-4">
                 <p className="text-sm font-black text-slate-400 uppercase tracking-widest">No suppliers found matching query</p>
               </div>
-            ) : filteredSuppliers.map((supplier, i) => (
-              <motion.div 
-                key={supplier.id}
-                initial={{ opacity: 0, scale: 0.95 }}
-                animate={{ opacity: 1, scale: 1 }}
-                transition={{ delay: i * 0.05 }}
-                className="vibrant-card p-8 group bg-white border border-slate-100 hover:shadow-xl transition-all relative flex flex-col justify-between"
-              >
+            ) : filteredSuppliers.map((supplier, i) => {
+              if (supplier.id === '' || supplier.id === undefined || supplier.id === null) {
+                console.warn("TEMPORARY KEY DETECTOR:", { file: "Suppliers.tsx", component: "SuppliersList", keyVal: supplier.id });
+              }
+              return (
+                <motion.div 
+                  key={`supplier-${supplier.id || i}-${i}`}
+                  initial={{ opacity: 0, scale: 0.95 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  transition={{ delay: i * 0.05 }}
+                  className="vibrant-card p-8 group bg-white border border-slate-100 hover:shadow-xl transition-all relative flex flex-col justify-between"
+                >
                 <div>
                   <div className="flex justify-between items-start mb-6">
                     <div className="flex items-center gap-4">
@@ -1017,7 +1021,7 @@ const Suppliers: React.FC = () => {
                   </button>
                 </div>
               </motion.div>
-            ))}
+            );})}
           </div>
         </div>
       )}

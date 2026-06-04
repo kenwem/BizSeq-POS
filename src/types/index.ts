@@ -37,6 +37,7 @@ export interface InventoryLocation {
   name: string;
   description?: string;
   status: 'active' | 'inactive';
+  isDefaultSalesSource?: boolean;
   createdAt: any;
   updatedAt: any;
 }
@@ -92,6 +93,7 @@ export interface SaleItem {
   price: number;
   cost: number; // Snapshot cost at time of sale for profit calculation
   unitName?: string; // e.g., 'Carton'
+  conversionRate?: number; // Package conversion rate factor
   total: number;
   inventoryLocationId: string; // New field
 }
@@ -116,6 +118,9 @@ export interface Sale {
   discount: number;
   paymentMethod: PaymentMethod | 'split';
   splitPayments?: SplitPayment[];
+  tenderedAmount?: number;
+  changeDue?: number;
+  cashbackAmount?: number;
   customerId?: string;
   customerName?: string;
   status: 'completed' | 'voided';

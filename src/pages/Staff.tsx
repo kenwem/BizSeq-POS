@@ -78,7 +78,6 @@ const Staff: React.FC = () => {
       // Create virtual email for staff: username@bizseq.internal
       const virtualEmail = `${formData.username.toLowerCase()}@bizseq.internal`;
       
-      console.log("Staff: Attempting to create staff member via REST API...");
       
       const payload = {
         email: virtualEmail,
@@ -183,14 +182,18 @@ const Staff: React.FC = () => {
           <div className="col-span-full py-24 bg-slate-50 rounded-[3rem] border-2 border-dashed border-slate-200 text-center">
              <p className="text-slate-400 font-bold italic">No operators provisioned yet.</p>
           </div>
-        ) : staff.map((member, i) => (
-          <motion.div 
-            key={member.uid}
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-            transition={{ delay: i * 0.1 }}
-            className="vibrant-card p-10 group border-2 border-slate-100 hover:border-emerald-500/10"
-          >
+        ) : staff.map((member, i) => {
+          if (member.uid === '' || member.uid === undefined || member.uid === null) {
+            console.warn("TEMPORARY KEY DETECTOR:", { file: "Staff.tsx", component: "StaffList", keyVal: member.uid });
+          }
+          return (
+            <motion.div 
+              key={`member-${member.uid || i}-${i}`}
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              transition={{ delay: i * 0.1 }}
+              className="vibrant-card p-10 group border-2 border-slate-100 hover:border-emerald-500/10"
+            >
              <div className="flex items-start justify-between mb-8">
                 <div className="h-20 w-20 rounded-[2rem] bg-slate-900 flex items-center justify-center text-white font-black text-2xl shadow-2xl relative overflow-hidden">
                   {member.username?.charAt(0).toUpperCase() || 'U'}
@@ -238,7 +241,7 @@ const Staff: React.FC = () => {
                 </button>
              </div>
           </motion.div>
-        ))}
+        );})}
       </div>
 
       {/* Add Staff Modal */}

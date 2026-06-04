@@ -4,6 +4,7 @@ import { signInWithEmailAndPassword, sendPasswordResetEmail } from 'firebase/aut
 import { auth } from '../services/firebase';
 import { ShieldCheck, Lock, User, AlertCircle, ArrowRight, Zap, Fingerprint, Mail, Eye, EyeOff } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { useAuth } from '../context/AuthContext';
 
 const Login: React.FC = () => {
   const [identifier, setIdentifier] = useState('');
@@ -13,6 +14,13 @@ const Login: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [resetSent, setResetSent] = useState(false);
   const navigate = useNavigate();
+  const { user, loading: authLoading } = useAuth();
+
+  React.useEffect(() => {
+    if (user && !authLoading) {
+      navigate('/');
+    }
+  }, [user, authLoading, navigate]);
 
   React.useEffect(() => {
     const authError = localStorage.getItem('authError');
@@ -34,9 +42,12 @@ const Login: React.FC = () => {
       loginIdentifier = `${loginIdentifier.toLowerCase()}@bizseq.internal`;
     }
 
+    console.log("LOGIN START", loginIdentifier);
+
     try {
       // 1. Perform Login
-      await signInWithEmailAndPassword(auth, loginIdentifier, password);
+      const res = await signInWithEmailAndPassword(auth, loginIdentifier, password);
+      console.log("LOGIN SUCCESS", { uid: res.user.uid, email: res.user.email });
       navigate('/');
     } catch (err: any) {
       console.error('Login error:', err);

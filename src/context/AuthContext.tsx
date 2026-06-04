@@ -28,6 +28,7 @@ interface AuthState {
   }) | null;
   loading: boolean;
   reconnecting: boolean;
+  error?: string | null;
 }
 
 interface AuthContextType {
@@ -54,6 +55,7 @@ interface AuthContextType {
   }) | null;
   loading: boolean;
   reconnecting: boolean;
+  error?: string | null;
   signOut: () => Promise<void>;
 }
 
@@ -214,23 +216,69 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     let isSubscribed = true;
     let userUnsubscribe: (() => void) | null = null;
     let storeUnsubscribe: (() => void) | null = null;
+    let profileTimeoutId: any = null;
 
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
-      // Clean up previous listeners
+      // Clean up previous listeners & timeout
       if (userUnsubscribe) { userUnsubscribe(); userUnsubscribe = null; }
       if (storeUnsubscribe) { storeUnsubscribe(); storeUnsubscribe = null; }
+      if (profileTimeoutId) { clearTimeout(profileTimeoutId); profileTimeoutId = null; }
+
+      console.log("AUTH STATE CHANGED", currentUser ? { uid: currentUser.uid, email: currentUser.email } : "null");
 
       if (!currentUser) {
         if (isSubscribed) {
+          console.log("LOADING FALSE (No CurrentUser)");
           setState({
             user: null,
             profile: null,
             loading: false,
             reconnecting: false,
+            error: null,
           });
         }
         return;
       }
+
+      // Start 8-second timeout strategy for profile document load
+      profileTimeoutId = setTimeout(() => {
+        if (isSubscribed) {
+          setState(prev => {
+            if (!prev.profile && prev.loading) {
+              console.warn("AuthContext: 8s timeout reached without a profile document load. Falling back to default profile.");
+              const fallbackProfile = {
+                id: currentUser.uid,
+                uid: currentUser.uid,
+                username: 'demo_admin',
+                email: currentUser.email || 'admin@store.com',
+                name: currentUser.displayName || 'Demo Cashier',
+                role: 'admin' as any,
+                storeId: 'demo-store',
+                storeName: 'Demo Retail Store',
+                store: { 
+                  name: 'Demo Retail Store',
+                  storeAddress: '',
+                  storePhone: '',
+                  receiptHeader: '',
+                  receiptFooter: '',
+                  taxRate: 0,
+                  serviceFee: 0,
+                  allowNegativeStock: false
+                },
+                createdAt: new Date().toISOString()
+              };
+              localStorage.setItem(`offline_auth_profile_${currentUser.uid}`, JSON.stringify(fallbackProfile));
+              return {
+                ...prev,
+                loading: false,
+                profile: fallbackProfile,
+                error: null
+              };
+            }
+            return prev;
+          });
+        }
+      }, 8000);
 
       // Fast check for cached profile to immediately hydrate offline
       const cachedProfileStr = localStorage.getItem(`offline_auth_profile_${currentUser.uid}`);
@@ -243,246 +291,311 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
           cachedProfile.store.name = cachedProfile.storeName;
 
+          console.log("LOADING FALSE (from Cache)");
           setState({
             user: currentUser,
             profile: cachedProfile,
             loading: false,
             reconnecting: false,
+            error: null,
           });
         } catch (e) {
           console.error("AuthContext: Failed to parse cached profile", e);
         }
       }
 
-      // 1. Check for Super Admin UID override
-      if (currentUser.uid === 'c9grDXNTL6f1in8ZYZzPKtNhhE92') {
-        if (isSubscribed) {
-          // Listen to stores/SYSTEM in real-time
-          const systemStoreRef = doc(db, 'stores', 'SYSTEM');
-          storeUnsubscribe = onSnapshot(systemStoreRef, (storeSnap) => {
-            let storeName = 'Global Control';
-            let storeAddress = '';
-            let storePhone = '';
-            let receiptHeader = '';
-            let receiptFooter = '';
-            let taxRate = 0;
-            let serviceFee = 0;
-            let allowNegativeStock = false;
+      try {
+        // 1. Check for Super Admin UID override
+        if (currentUser.uid === 'c9grDXNTL6f1in8ZYZzPKtNhhE92') {
+          if (isSubscribed) {
+            // Listen to stores/SYSTEM in real-time
+            const systemStoreRef = doc(db, 'stores', 'SYSTEM');
+            storeUnsubscribe = onSnapshot(systemStoreRef, (storeSnap) => {
+              if (profileTimeoutId) { clearTimeout(profileTimeoutId); profileTimeoutId = null; }
+              let storeName = 'Global Control';
+              let storeAddress = '';
+              let storePhone = '';
+              let receiptHeader = '';
+              let receiptFooter = '';
+              let taxRate = 0;
+              let serviceFee = 0;
+              let allowNegativeStock = false;
 
-            if (storeSnap.exists()) {
-              const storeData = storeSnap.data();
-              storeName = storeData.storeName || storeData.name || 'Global Control';
-              storeAddress = storeData.storeAddress || '';
-              storePhone = storeData.storePhone || '';
-              receiptHeader = storeData.receiptHeader || '';
-              receiptFooter = storeData.receiptFooter || '';
-              taxRate = storeData.taxRate || 0;
-              serviceFee = storeData.serviceFee || 0;
-              allowNegativeStock = storeData.allowNegativeStock || false;
-            }
+              if (storeSnap.exists()) {
+                const storeData = storeSnap.data();
+                storeName = storeData.storeName || storeData.name || 'Global Control';
+                storeAddress = storeData.storeAddress || '';
+                storePhone = storeData.storePhone || '';
+                receiptHeader = storeData.receiptHeader || '';
+                receiptFooter = storeData.receiptFooter || '';
+                taxRate = storeData.taxRate || 0;
+                serviceFee = storeData.serviceFee || 0;
+                allowNegativeStock = storeData.allowNegativeStock || false;
+              }
 
-            const finalProfile = {
-              uid: currentUser.uid,
-              email: currentUser.email!,
-              username: 'System Master',
-              role: 'super_admin' as const,
-              storeId: 'SYSTEM',
-              storeName,
-              storeAddress,
-              storePhone,
-              receiptHeader,
-              receiptFooter,
-              taxRate,
-              serviceFee,
-              allowNegativeStock,
-              createdAt: new Date().toISOString(),
-              store: {
-                name: storeName,
+              const finalProfile = {
+                uid: currentUser.uid,
+                email: currentUser.email!,
+                username: 'System Master',
+                role: 'super_admin' as const,
+                storeId: 'SYSTEM',
+                storeName,
                 storeAddress,
                 storePhone,
                 receiptHeader,
                 receiptFooter,
                 taxRate,
                 serviceFee,
-                allowNegativeStock
+                allowNegativeStock,
+                createdAt: new Date().toISOString(),
+                store: {
+                  name: storeName,
+                  storeAddress,
+                  storePhone,
+                  receiptHeader,
+                  receiptFooter,
+                  taxRate,
+                  serviceFee,
+                  allowNegativeStock
+                }
+              };
+
+              localStorage.setItem(`offline_auth_profile_${currentUser.uid}`, JSON.stringify(finalProfile));
+
+              if (isSubscribed) {
+                console.log("LOADING FALSE (from SuperAdminSYSTEM)");
+                setState({
+                  user: currentUser,
+                  profile: finalProfile,
+                  loading: false,
+                  reconnecting: false,
+                  error: null,
+                });
               }
-            };
+            }, (err) => {
+              console.warn("AuthContext: System store listen failed, using fallback profile", err);
+              if (isSubscribed) {
+                setState(prev => ({
+                  ...prev,
+                  loading: false,
+                  error: `Permission error or system store offline: ${err.message || String(err)}`
+                }));
+              }
+            });
+          }
+          return;
+        }
 
-            localStorage.setItem(`offline_auth_profile_${currentUser.uid}`, JSON.stringify(finalProfile));
-
-            if (isSubscribed) {
-              setState({
+        // 2. Normal users: first listen to their user document
+        const userRef = doc(db, 'users', currentUser.uid);
+        let notFoundCount = 0;
+        userUnsubscribe = onSnapshot(userRef, (userSnap) => {
+          console.log("PROFILE FOUND", userSnap.exists() ? { uid: userSnap.id, role: userSnap.data()?.role, storeId: userSnap.data()?.storeId } : "not found");
+          if (!userSnap.exists()) {
+            console.warn("AuthContext: No user profile found in Firestore yet.");
+            notFoundCount++;
+            if (notFoundCount < 5 && isSubscribed) {
+              // Keep user authenticated in loading state while waiting for firestore doc creation or replication lag
+              setState(prev => ({
+                ...prev,
                 user: currentUser,
-                profile: finalProfile,
+                profile: null,
+                loading: true
+              }));
+              return;
+            }
+            if (isSubscribed) {
+              if (profileTimeoutId) { clearTimeout(profileTimeoutId); profileTimeoutId = null; }
+              setState({
+                user: null,
+                profile: null,
                 loading: false,
                 reconnecting: false,
+                error: "Your user profile does not exist in the database. Please contact an administrator."
               });
             }
-          }, (err) => {
-            console.warn("AuthContext: System store listen failed, using fallback profile", err);
-          });
-        }
-        return;
-      }
-
-      // 2. Normal users: first listen to their user document
-      const userRef = doc(db, 'users', currentUser.uid);
-      let notFoundCount = 0;
-      userUnsubscribe = onSnapshot(userRef, (userSnap) => {
-        if (!userSnap.exists()) {
-          console.warn("AuthContext: No user profile found in Firestore yet.");
-          notFoundCount++;
-          if (notFoundCount < 5 && isSubscribed) {
-            // Keep user authenticated in loading state while waiting for firestore doc creation or replication lag
-            setState(prev => ({
-              ...prev,
-              user: currentUser,
-              profile: null,
-              loading: true
-            }));
             return;
           }
-          if (isSubscribed) {
-            setState({
-              user: null,
-              profile: null,
-              loading: false,
-              reconnecting: false,
-            });
+
+          const userData = userSnap.data() as UserProfile;
+          const validRoles: UserRole[] = ['super_admin', 'store_admin', 'manager', 'staff', 'cashier'];
+          const role = userData.role;
+          const storeId = userData.storeId;
+
+          const isValidRole = role && validRoles.includes(role);
+          const hasStoreId = role === 'super_admin' || (storeId && typeof storeId === 'string' && storeId.trim() !== '');
+
+          if (!isValidRole || !hasStoreId) {
+            console.error("AuthContext: Invalid role or store ID detected.");
+            if (isSubscribed) {
+              if (profileTimeoutId) { clearTimeout(profileTimeoutId); profileTimeoutId = null; }
+              setState({
+                user: null,
+                profile: null,
+                loading: false,
+                reconnecting: false,
+                error: "Access Denied: Invalid role or store configuration."
+              });
+            }
+            return;
           }
-          return;
-        }
 
-        const userData = userSnap.data() as UserProfile;
-        const validRoles: UserRole[] = ['super_admin', 'store_admin', 'manager', 'staff', 'cashier'];
-        const role = userData.role;
-        const storeId = userData.storeId;
+          // Listen to their associated store document in real-time
+          if (userData.storeId) {
+            if (storeUnsubscribe) { storeUnsubscribe(); storeUnsubscribe = null; }
+            const storeRef = doc(db, 'stores', userData.storeId);
+            storeUnsubscribe = onSnapshot(storeRef, (storeSnap) => {
+              if (profileTimeoutId) { clearTimeout(profileTimeoutId); profileTimeoutId = null; }
+              let storeName = userData.storeId === 'SYSTEM' ? 'Global Control' : '';
+              let storeAddress = '';
+              let storePhone = '';
+              let receiptHeader = '';
+              let receiptFooter = '';
+              let taxRate = 0;
+              let serviceFee = 0;
+              let allowNegativeStock = false;
 
-        const isValidRole = role && validRoles.includes(role);
-        const hasStoreId = role === 'super_admin' || (storeId && typeof storeId === 'string' && storeId.trim() !== '');
-
-        if (!isValidRole || !hasStoreId) {
-          console.error("AuthContext: Invalid role or store ID detected.");
-          if (isSubscribed) {
-            setState({
-              user: null,
-              profile: null,
-              loading: false,
-              reconnecting: false,
-            });
-          }
-          return;
-        }
-
-        // Listen to their associated store document in real-time
-        if (userData.storeId) {
-          if (storeUnsubscribe) { storeUnsubscribe(); storeUnsubscribe = null; }
-          const storeRef = doc(db, 'stores', userData.storeId);
-          storeUnsubscribe = onSnapshot(storeRef, (storeSnap) => {
-            let storeName = userData.storeId === 'SYSTEM' ? 'Global Control' : '';
-            let storeAddress = '';
-            let storePhone = '';
-            let receiptHeader = '';
-            let receiptFooter = '';
-            let taxRate = 0;
-            let serviceFee = 0;
-            let allowNegativeStock = false;
-
-            if (storeSnap.exists()) {
-              const storeData = storeSnap.data();
-              if (storeData.status === 'suspended' && userData.storeId !== 'SYSTEM') {
-                console.error("AuthContext: Store suspended.");
+              if (storeSnap.exists()) {
+                const storeData = storeSnap.data();
+                console.log("STORE FOUND", { id: storeSnap.id, name: storeData.storeName || storeData.name });
+                if (storeData.status === 'suspended' && userData.storeId !== 'SYSTEM') {
+                  console.error("AuthContext: Store suspended.");
+                  if (isSubscribed) {
+                    setState({
+                      user: null,
+                      profile: null,
+                      loading: false,
+                      reconnecting: false,
+                      error: "Your store has been suspended. Please check with support."
+                    });
+                  }
+                  return;
+                }
+                storeName = storeData.storeName || storeData.name || storeName;
+                storeAddress = storeData.storeAddress || '';
+                storePhone = storeData.storePhone || '';
+                receiptHeader = storeData.receiptHeader || '';
+                receiptFooter = storeData.receiptFooter || '';
+                taxRate = storeData.taxRate || 0;
+                serviceFee = storeData.serviceFee || 0;
+                allowNegativeStock = storeData.allowNegativeStock || false;
+              } else if (userData.role !== 'super_admin' && userData.storeId !== 'SYSTEM') {
+                console.error("AuthContext: Store document does not exist.");
                 if (isSubscribed) {
                   setState({
                     user: null,
                     profile: null,
                     loading: false,
                     reconnecting: false,
+                    error: "The store assigned to your account does not exist."
                   });
                 }
                 return;
               }
-              storeName = storeData.storeName || storeData.name || storeName;
-              storeAddress = storeData.storeAddress || '';
-              storePhone = storeData.storePhone || '';
-              receiptHeader = storeData.receiptHeader || '';
-              receiptFooter = storeData.receiptFooter || '';
-              taxRate = storeData.taxRate || 0;
-              serviceFee = storeData.serviceFee || 0;
-              allowNegativeStock = storeData.allowNegativeStock || false;
-            }
 
-            const finalProfile = {
-              ...userData,
-              storeName,
-              storeAddress,
-              storePhone,
-              receiptHeader,
-              receiptFooter,
-              taxRate,
-              serviceFee,
-              allowNegativeStock,
-              store: {
-                name: storeName,
+              const finalProfile = {
+                ...userData,
+                storeName,
                 storeAddress,
                 storePhone,
                 receiptHeader,
                 receiptFooter,
                 taxRate,
                 serviceFee,
-                allowNegativeStock
+                allowNegativeStock,
+                store: {
+                  name: storeName,
+                  storeAddress,
+                  storePhone,
+                  receiptHeader,
+                  receiptFooter,
+                  taxRate,
+                  serviceFee,
+                  allowNegativeStock
+                }
+              };
+
+              localStorage.setItem(`offline_auth_profile_${currentUser.uid}`, JSON.stringify(finalProfile));
+
+              if (isSubscribed) {
+                console.log("LOADING FALSE (from StoreSnapshot)");
+                setState({
+                  user: currentUser,
+                  profile: finalProfile,
+                  loading: false,
+                  reconnecting: false,
+                  error: null,
+                });
               }
-            };
-
-            localStorage.setItem(`offline_auth_profile_${currentUser.uid}`, JSON.stringify(finalProfile));
-
-            if (isSubscribed) {
-              setState({
-                user: currentUser,
-                profile: finalProfile,
-                loading: false,
-                reconnecting: false,
-              });
-            }
-          }, (err) => {
-            console.error("AuthContext: Store listener failed:", err);
-          });
-        } else {
-          // If no storeId, hydrate user profile details alone
-          const finalProfile = {
-            ...userData,
-            storeName: '',
-            storeAddress: '',
-            storePhone: '',
-            receiptHeader: '',
-            receiptFooter: '',
-            taxRate: 0,
-            serviceFee: 0,
-            allowNegativeStock: false,
-            store: {
-              name: '',
+            }, (err) => {
+              console.error("AuthContext: Store listener failed:", err);
+              if (isSubscribed) {
+                if (profileTimeoutId) { clearTimeout(profileTimeoutId); profileTimeoutId = null; }
+                setState(prev => ({
+                  ...prev,
+                  loading: false,
+                  error: `Store query error: ${err.message || String(err)}`
+                }));
+              }
+            });
+          } else {
+            // If no storeId, hydrate user profile details alone
+            if (profileTimeoutId) { clearTimeout(profileTimeoutId); profileTimeoutId = null; }
+            const finalProfile = {
+              ...userData,
+              storeName: '',
               storeAddress: '',
               storePhone: '',
               receiptHeader: '',
               receiptFooter: '',
               taxRate: 0,
               serviceFee: 0,
-              allowNegativeStock: false
-            }
-          };
-          localStorage.setItem(`offline_auth_profile_${currentUser.uid}`, JSON.stringify(finalProfile));
-          if (isSubscribed) {
-            setState({
-              user: currentUser,
-              profile: finalProfile,
-              loading: false,
-              reconnecting: false,
-            });
+              allowNegativeStock: false,
+              store: {
+                name: '',
+                storeAddress: '',
+                storePhone: '',
+                receiptHeader: '',
+                receiptFooter: '',
+                taxRate: 0,
+                serviceFee: 0,
+                allowNegativeStock: false
+              }
+            };
+             localStorage.setItem(`offline_auth_profile_${currentUser.uid}`, JSON.stringify(finalProfile));
+             if (isSubscribed) {
+               console.log("LOADING FALSE (No Store ID)");
+               setState({
+                 user: currentUser,
+                 profile: finalProfile,
+                 loading: false,
+                 reconnecting: false,
+                 error: null,
+               });
+             }
           }
+        }, (err) => {
+          console.error("AuthContext: User profile listener failed:", err);
+          if (isSubscribed) {
+            if (profileTimeoutId) { clearTimeout(profileTimeoutId); profileTimeoutId = null; }
+            setState(prev => ({
+              ...prev,
+              loading: false,
+              error: `User document subscription failed: ${err.message || String(err)}`
+            }));
+          }
+        });
+      } catch (err: any) {
+        console.error("AuthContext: Synchronous listener attachment failed:", err);
+        if (isSubscribed) {
+          if (profileTimeoutId) { clearTimeout(profileTimeoutId); profileTimeoutId = null; }
+          setState(prev => ({
+            ...prev,
+            loading: false,
+            error: `Failed to initialize database stream: ${err.message || String(err)}`
+          }));
         }
-      }, (err) => {
-        console.error("AuthContext: User profile listener failed:", err);
-      });
+      }
     });
 
     return () => {
@@ -490,6 +603,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       unsubscribe();
       if (userUnsubscribe) userUnsubscribe();
       if (storeUnsubscribe) storeUnsubscribe();
+      if (profileTimeoutId) clearTimeout(profileTimeoutId);
     };
   }, []);
 
@@ -506,6 +620,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       profile: state.profile,
       loading: state.loading,
       reconnecting: state.reconnecting,
+      error: state.error || null,
       signOut
     }}>
       {children}

@@ -1,4 +1,6 @@
 import React, { useState, useMemo, useEffect } from 'react';
+import { jsPDF } from 'jspdf';
+import 'jspdf-autotable';
 import { useAuth } from '../context/AuthContext';
 import { db as dexie } from '../services/db';
 import { db as firestore } from '../services/firebase';
@@ -69,14 +71,20 @@ const Reports: React.FC = () => {
   const [isSavingExpense, setIsSavingExpense] = useState(false);
 
   // Active Report Tab
-  const [activeTab, setActiveTab] = useState<'overview' | 'sales' | 'products' | 'expenses' | 'analytics'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'sales' | 'products' | 'expenses' | 'analytics' | 'locations'>('overview');
 
   // Date Range Filters State
   const [startDateStr, setStartDateStr] = useState<string>('');
   const [endDateStr, setEndDateStr] = useState<string>('');
 
   // Selected Report Type for print/export focus
-  const [selectedReportType, setSelectedReportType] = useState<'income_earning' | 'stock_taking' | 'expenses_ledger'>('income_earning');
+  const [selectedReportType, setSelectedReportType] = useState<'income_earning' | 'stock_taking' | 'expenses_ledger' | 'location_reports'>('income_earning');
+
+  // Extra state for Locations reports
+  const [locations, setLocations] = useState<any[]>([]);
+  const [stock, setStock] = useState<any[]>([]);
+  const [locationSearchQuery, setLocationSearchQuery] = useState('');
+  const [selectedReportLocationId, setSelectedReportLocationId] = useState<string>('ALL');
 
   // Load Sales, Products, and Expenses
   useEffect(() => {
@@ -158,10 +166,36 @@ const Reports: React.FC = () => {
       setIsLoading(false);
     });
 
+    // 4. Live Firestore Locations listener
+    const locationsQuery = query(collection(firestore, 'inventory_locations'), where('storeId', '==', storeId));
+    const unsubscribeLocations = onSnapshot(locationsQuery, (snapshot) => {
+      const liveLocations = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+      setLocations(liveLocations);
+    }, (err) => {
+      console.warn("Reports: locations query offline or failed", err);
+    });
+
+    // 5. Live Firestore Stock levels listener
+    const stockQuery = collection(firestore, 'inventory_location_stock');
+    const unsubscribeStock = onSnapshot(stockQuery, (snapshot) => {
+      const liveStock = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+      setStock(liveStock);
+    }, (err) => {
+      console.warn("Reports: stock allocations query offline or failed", err);
+    });
+
     return () => {
       unsubscribeSales();
       unsubscribeProducts();
       unsubscribeExpenses();
+      unsubscribeLocations();
+      unsubscribeStock();
     };
   }, [storeId]);
 
@@ -458,43 +492,110 @@ const Reports: React.FC = () => {
 
   const handleDownloadReportCSV = () => {
     let csvContent = "";
-    let fileName = `BizSeq_Report_${activeTab}_${new Date().toISOString().split('T')[0]}.csv`;
+    let fileName = `BizSeq_Detailed_Report_${activeTab}_${new Date().toISOString().split('T')[0]}.csv`;
 
     if (activeTab === 'expenses') {
       const headers = ["ID", "Description", "Category", "Date", "Amount"];
       const rows = processedExpenses.map(e => [
         e.id || "",
         `"${String(e.description).replace(/"/g, '""')}"`,
-        e.category || "",
+        (e.category || "GENERAL").toUpperCase(),
         e.date || "",
         String(e.amount || 0)
       ]);
       csvContent = [headers.join(","), ...rows.map(r => r.join(","))].join("\r\n");
     } else if (activeTab === 'products') {
-      const headers = ["Rank", "Product Name", "Quantity Sold"];
-      const rows = productMetrics.bestSellers.map((item, index) => [
-        String(index + 1),
-        `"${String(item.name).replace(/"/g, '""')}"`,
-        String(item.qty || 0)
-      ]);
+      const headers = ["Rank", "Product Name", "Category", "Qty Sold", "Price", "Revenue", "Remaining Stock"];
+      const rows = productMetrics.bestSellers.map((item, index) => {
+        const prodData = products.find(p => p.id === item.id);
+        const remStock = prodData ? prodData.stock : 0;
+        return [
+          String(index + 1),
+          `"${String(item.name || "N/A").replace(/"/g, '""')}"`,
+          `"${String(prodData?.category || "General").toUpperCase()}"`,
+          String(item.qty || 0),
+          String(prodData?.price || 0),
+          String((item.qty || 0) * (prodData?.price || 0)),
+          String(remStock || 0)
+        ];
+      });
       csvContent = [headers.join(","), ...rows.map(r => r.join(","))].join("\r\n");
+    } else if (activeTab === 'locations') {
+      const headers = ["Product Name", "Barcode/SKU", "Storage Location", "Qty Sold (Period)", "Current Stock", "Packaging", "Status"];
+      const flatLocationAudit: any[] = [];
+      products.forEach(p => {
+        const prodStocks = stock.filter(s => s.productId === p.id);
+        if (prodStocks.length > 0) {
+          prodStocks.forEach(s => {
+            const locName = locations.find(l => l.id === s.inventoryLocationId)?.name || 'Default Storage';
+            
+            let soldQty = 0;
+            processedSales.forEach(sale => {
+              (sale.items || []).forEach((item: any) => {
+                if (item.productId === p.id && item.inventoryLocationId === s.inventoryLocationId) {
+                  soldQty += item.quantity * (item.conversionRate || 1);
+                }
+              });
+            });
+
+            const capacity = p.packageCapacity || p.productsPerCarton || 0;
+            const pkgName = p.packageType || 'Carton';
+            let pkgBreakdown = '-';
+            const localQty = s.quantity || 0;
+            if (capacity > 1) {
+              const fullPkgs = Math.floor(localQty / capacity);
+              const remainingUnits = localQty % capacity;
+              pkgBreakdown = `${fullPkgs} ${pkgName}s + ${remainingUnits} pcs`;
+            }
+
+            const lowThresh = s.lowStockThreshold ?? p.lowStockThreshold ?? 5;
+            const isLow = localQty <= lowThresh;
+            const statusStr = isLow ? "LOW STOCK" : "GOOD";
+
+            flatLocationAudit.push([
+              `"${p.name.replace(/"/g, '""')}"`,
+              `"${(p.barcode || p.sku || 'N/A').replace(/"/g, '""')}"`,
+              `"${locName.replace(/"/g, '""')}"`,
+              String(soldQty),
+              String(localQty),
+              `"${pkgBreakdown}"`,
+              statusStr
+            ]);
+          });
+        }
+      });
+      csvContent = [headers.join(","), ...flatLocationAudit.map(r => r.join(","))].join("\r\n");
     } else {
-      const headers = ["Sale ID", "Date", "Cashier", "Payment Method", "Items Count", "Subtotal", "Discount", "Total Paid"];
-      const rows = processedSales.map(s => {
+      // Detailed sales item-by-item audit CSV!
+      const headers = ["Sale ID", "Receipt No", "Date & Time", "Cashier", "Product Sold", "Unit Type", "Quantity", "Price Per Unit", "Cost Price", "Revenue Subtotal", "Net Profit", "Location Source", "Payment Method"];
+      const rows: any[][] = [];
+      processedSales.forEach(s => {
         const sTime = getSaleTime(s);
         const dateObj = sTime ? new Date(sTime) : new Date();
         const formattedDate = dateObj.toLocaleDateString() + " " + dateObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-        const itemsCount = (s.items || []).reduce((sum: number, item: any) => sum + item.quantity, 0);
-        return [
-          s.id || "",
-          `"${formattedDate}"`,
-          `"${String(s.cashierName || 'System').replace(/"/g, '""')}"`,
-          s.paymentMethod || "",
-          String(itemsCount),
-          String(s.subtotal || s.total || 0),
-          String(s.discount || 0),
-          String(s.total || 0)
-        ];
+        
+        (s.items || []).forEach((item: any) => {
+          const locName = locations.find(l => l.id === item.inventoryLocationId)?.name || 'Default Storage';
+          const rev = item.total || (item.price * item.quantity);
+          const itemCost = item.cost || 0;
+          const totalCostPrice = itemCost * item.quantity;
+          const profit = rev - totalCostPrice;
+          rows.push([
+            s.id || "",
+            s.id?.substring(0, 8).toUpperCase() || "",
+            `"${formattedDate}"`,
+            `"${String(s.cashierName || 'System').replace(/"/g, '""')}"`,
+            `"${String(item.name).replace(/"/g, '""')}"`,
+            item.unitName || 'Piece',
+            String(item.quantity),
+            String(item.price),
+            String(itemCost),
+            String(rev),
+            String(profit),
+            `"${locName.replace(/"/g, '""')}"`,
+            s.paymentMethod || "Cash"
+          ]);
+        });
       });
       csvContent = [headers.join(","), ...rows.map(r => r.join(","))].join("\r\n");
     }
@@ -508,6 +609,169 @@ const Reports: React.FC = () => {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+  };
+
+  const handleDownloadReportPDF = () => {
+    const doc = new jsPDF() as any;
+    const storeName = profile?.storeName || "BIZSEQ STORE";
+    const dateRangeStr = (startDateStr || endDateStr) 
+      ? `Period: ${startDateStr || "Beginning"} to ${endDateStr || "Today"}` 
+      : `Period: All-Time`;
+    
+    // Header Setup
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(16);
+    doc.text(storeName.toUpperCase(), 14, 15);
+    
+    doc.setFontSize(10);
+    doc.setFont("helvetica", "normal");
+    doc.text(dateRangeStr, 14, 21);
+    doc.text(`Generated Date: ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString()}`, 14, 26);
+    
+    let reportTitle = "";
+    let headers: string[] = [];
+    let rows: any[][] = [];
+
+    if (activeTab === 'expenses') {
+      reportTitle = "STORE EXPENSES & NET PROFIT STATEMENT";
+      headers = ["No", "Description", "Category", "Logged Date", "Amount"];
+      rows = processedExpenses.map((e, index) => [
+        String(index + 1),
+        e.description || "",
+        (e.category ? e.category.toUpperCase() : "GENERAL"),
+        e.date || "N/A",
+        formatCurrency(e.amount || 0)
+      ]);
+      const totalExp = processedExpenses.reduce((sum, e) => sum + (e.amount || 0), 0);
+      rows.push(["", "TOTAL EXPENSES", "", "", formatCurrency(totalExp)]);
+    } else if (activeTab === 'products') {
+      reportTitle = "PRODUCT PERFORMANCE AUDIT";
+      headers = ["Rank", "Product Name", "Category", "Qty Sold", "Price", "Revenue", "Remaining Stock"];
+      rows = productMetrics.bestSellers.map((item, index) => {
+        const prodData = products.find(p => p.id === item.id);
+        const remStock = prodData ? prodData.stock : 0;
+        return [
+          String(index + 1),
+          item.name || "N/A",
+          (prodData?.category || "General").toUpperCase(),
+          String(item.qty || 0),
+          formatCurrency(prodData?.price || 0),
+          formatCurrency((item.qty || 0) * (prodData?.price || 0)),
+          String(remStock || 0)
+        ];
+      });
+    } else if (activeTab === 'locations') {
+      reportTitle = "WAREHOUSE & COLD STORAGE (MULTI-LOCATION) AUDIT";
+      headers = ["Product Name", "Barcode/SKU", "Storage Location", "Qty Sold (Period)", "Current Stock", "Packaging", "Status"];
+      
+      const flatLocationAudit: any[] = [];
+      products.forEach(p => {
+        const prodStocks = stock.filter(s => s.productId === p.id);
+        if (prodStocks.length > 0) {
+          prodStocks.forEach(s => {
+            const locName = locations.find(l => l.id === s.inventoryLocationId)?.name || 'Default Storage';
+            
+            let soldQty = 0;
+            processedSales.forEach(sale => {
+              (sale.items || []).forEach((item: any) => {
+                if (item.productId === p.id && item.inventoryLocationId === s.inventoryLocationId) {
+                  soldQty += item.quantity * (item.conversionRate || 1);
+                }
+              });
+            });
+
+            const capacity = p.packageCapacity || p.productsPerCarton || 0;
+            const pkgName = p.packageType || 'Carton';
+            let pkgBreakdown = '-';
+            const localQty = s.quantity || 0;
+            if (capacity > 1) {
+              const fullPkgs = Math.floor(localQty / capacity);
+              const remainingUnits = localQty % capacity;
+              pkgBreakdown = `${fullPkgs} ${pkgName}s + ${remainingUnits} pcs`;
+            }
+
+            const lowThresh = s.lowStockThreshold ?? p.lowStockThreshold ?? 5;
+            const isLow = localQty <= lowThresh;
+            const statusStr = isLow ? "LOW STOCK" : "GOOD";
+
+            flatLocationAudit.push({
+              name: p.name,
+              barcode: p.barcode || p.sku || 'N/A',
+              location: locName,
+              sold: soldQty,
+              stock: localQty,
+              pkg: pkgBreakdown,
+              status: statusStr
+            });
+          });
+        }
+      });
+
+      rows = flatLocationAudit.map(item => [
+        item.name,
+        item.barcode,
+        item.location,
+        String(item.sold),
+        String(item.stock),
+        item.pkg,
+        item.status
+      ]);
+    } else {
+      // Detailed Earning / Sales Reports
+      reportTitle = "BIZSEQ DETAILED TRANSACTIONS AUDIT STATEMENT";
+      headers = ["Receipt No", "Date & Time", "Cashier", "Product Sold", "Qty", "Price", "Total Paid", "Location", "Pay Method"];
+      
+      const flatItems: any[] = [];
+      processedSales.forEach(s => {
+        const sTime = getSaleTime(s);
+        const dateObj = sTime ? new Date(sTime) : new Date();
+        const formattedDate = dateObj.toLocaleDateString() + " " + dateObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        
+        (s.items || []).forEach((item: any) => {
+          const locName = locations.find(l => l.id === item.inventoryLocationId)?.name || 'Default Storage';
+          flatItems.push({
+            receiptNo: s.id?.substring(0, 8).toUpperCase() || "N/A",
+            date: formattedDate,
+            cashier: s.cashierName || 'System',
+            product: `${item.name} ${item.unitName && item.unitName !== 'Piece' ? `(${item.unitName})` : ''}`,
+            qty: item.quantity,
+            price: formatCurrency(item.price),
+            total: formatCurrency(item.total || (item.price * item.quantity)),
+            location: locName,
+            payment: s.paymentMethod || "Cash"
+          });
+        });
+      });
+
+      rows = flatItems.map(item => [
+        item.receiptNo,
+        item.date,
+        item.cashier,
+        item.product,
+        String(item.qty),
+        item.price,
+        item.total,
+        item.location,
+        item.payment
+      ]);
+    }
+
+    doc.setFontSize(12);
+    doc.setFont("helvetica", "bold");
+    doc.text(reportTitle, 14, 35);
+    
+    doc.autoTable({
+      head: [headers],
+      body: rows,
+      startY: 40,
+      theme: 'grid',
+      headStyles: { fillColor: [15, 23, 42], halign: 'center', fontSize: 8 }, // Slate-900
+      styles: { font: 'helvetica', fontSize: 8 },
+      columnStyles: { 0: { halign: 'left' } }
+    });
+
+    const fileName = `BizSeq_Detailed_Report_${activeTab}_${new Date().toISOString().split('T')[0]}.pdf`;
+    doc.save(fileName);
   };
 
   const handlePrintReport = () => {
@@ -552,6 +816,7 @@ const Reports: React.FC = () => {
           { id: 'overview', label: 'Overview Metrics', icon: BarChart3 },
           { id: 'sales', label: 'Earning Reports', icon: TrendingUp },
           { id: 'products', label: 'Product performance', icon: Award },
+          { id: 'locations', label: 'Warehouse & Freezer Reports', icon: Building2 },
           { id: 'expenses', label: 'Store Expenses & Net Profit', icon: CreditCard },
           { id: 'analytics', label: 'Visual Trends', icon: BarChart3 }
         ].map(tab => {
@@ -560,7 +825,13 @@ const Reports: React.FC = () => {
           return (
             <button
               key={tab.id}
-              onClick={() => setActiveTab(tab.id as any)}
+              onClick={() => {
+                setActiveTab(tab.id as any);
+                if (tab.id === 'sales') setSelectedReportType('income_earning');
+                if (tab.id === 'products') setSelectedReportType('stock_taking');
+                if (tab.id === 'expenses') setSelectedReportType('expenses_ledger');
+                if (tab.id === 'locations') setSelectedReportType('location_reports');
+              }}
               className={cn(
                 "px-5 py-3 rounded-t-xl text-xs font-black uppercase tracking-wider transition-all flex items-center gap-2 border-b-2 whitespace-nowrap",
                 active 
@@ -619,11 +890,13 @@ const Reports: React.FC = () => {
                 if (val === 'income_earning') setActiveTab('sales');
                 if (val === 'stock_taking') setActiveTab('products');
                 if (val === 'expenses_ledger') setActiveTab('expenses');
+                if (val === 'location_reports') setActiveTab('locations');
               }}
               className="bg-transparent border-0 text-xs font-bold text-[#00529B] focus:outline-none cursor-pointer p-1"
             >
               <option value="income_earning">Sales & Earnings Statement</option>
               <option value="stock_taking">Products Stock-Taking & Performance</option>
+              <option value="location_reports">Warehouse & Freezer Multi-Location</option>
               <option value="expenses_ledger">Expenses Audit Ledger</option>
             </select>
           </div>
@@ -633,16 +906,25 @@ const Reports: React.FC = () => {
           <button 
             type="button"
             onClick={handleDownloadReportCSV}
-            className="flex items-center gap-2 bg-white border border-slate-200 hover:border-slate-800 text-slate-800 px-5 py-2.5 rounded-2xl text-[10px] font-black uppercase tracking-wider transition-all select-none"
+            className="flex items-center gap-2 bg-white border border-slate-200 hover:border-slate-800 text-slate-800 px-5 py-2.5 rounded-2xl text-[10px] font-black uppercase tracking-wider transition-all select-none cursor-pointer"
           >
             <Download className="h-4 w-4 text-emerald-600" />
             <span>Download CSV</span>
+          </button>
+
+          <button 
+            type="button"
+            onClick={handleDownloadReportPDF}
+            className="flex items-center gap-2 bg-white border border-slate-200 hover:border-slate-800 text-slate-800 px-5 py-2.5 rounded-2xl text-[10px] font-black uppercase tracking-wider transition-all select-none cursor-pointer"
+          >
+            <Download className="h-4 w-4 text-rose-600" />
+            <span>Download PDF</span>
           </button>
           
           <button 
             type="button"
             onClick={handlePrintReport}
-            className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-2xl text-[10px] font-black uppercase tracking-wider transition-all select-none shadow-md"
+            className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-2xl text-[10px] font-black uppercase tracking-wider transition-all select-none shadow-md cursor-pointer"
           >
             <Printer className="h-4 w-4" />
             <span>Print Report</span>
@@ -1217,6 +1499,228 @@ const Reports: React.FC = () => {
 
               </div>
 
+            </motion.div>
+          )}
+
+          {/* 6. WAREHOUSE & FREEZER LOCATION MANAGEMENT REPORT */}
+          {activeTab === 'locations' && (
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
+              
+              {/* Filter controls specifically for structural locations */}
+              <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-sm flex flex-col md:flex-row items-center justify-between gap-4">
+                <div className="flex flex-wrap items-center gap-4 w-full md:w-auto">
+                  <div className="flex flex-col gap-1.5">
+                    <span className="text-[10px] font-black uppercase text-slate-400 tracking-wider">Location Category</span>
+                    <select
+                      value={selectedReportLocationId}
+                      onChange={(e) => setSelectedReportLocationId(e.target.value)}
+                      className="bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-2 text-xs font-black uppercase tracking-wider text-slate-700 focus:outline-none focus:border-blue-500 cursor-pointer"
+                    >
+                      <option value="ALL">ALL LOCATIONS SUMMARY</option>
+                      {locations.map(loc => (
+                        <option key={loc.id} value={loc.id}>{loc.name.toUpperCase()}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="flex flex-col gap-1.5 w-full md:w-64">
+                    <span className="text-[10px] font-black uppercase text-slate-400 tracking-wider">Search Ledger Product</span>
+                    <input
+                      type="text"
+                      placeholder="Search name, category, barcode..."
+                      value={locationSearchQuery}
+                      onChange={(e) => setLocationSearchQuery(e.target.value)}
+                      className="bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-2 text-xs font-bold text-slate-700 placeholder-slate-400 focus:outline-none focus:border-blue-500"
+                    />
+                  </div>
+                </div>
+
+                {/* Performance stats row for multi-location */}
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-4 w-full md:w-auto shrink-0 font-mono text-right">
+                  <div className="border-r border-slate-150 pr-4">
+                    <div className="text-[9px] font-black uppercase text-slate-400 tracking-wider">Unique Products Listed</div>
+                    <div className="text-xl font-black text-slate-900">{products.length}</div>
+                  </div>
+                  <div className="border-r border-slate-150 pr-4 hidden md:block">
+                    <div className="text-[9px] font-black uppercase text-slate-400 tracking-wider">Storage Tracks</div>
+                    <div className="text-xl font-black text-blue-700">{locations.length || 2} Zones</div>
+                  </div>
+                  <div>
+                    <div className="text-[9px] font-black uppercase text-slate-400 tracking-wider">Items in Stock Matrix</div>
+                    <div className="text-xl font-black text-emerald-600">
+                      {stock.reduce((sum, s) => sum + (s.quantity || 0), 0)} pcs
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Multi-Location Main Matrix Ledger Table */}
+              <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden p-1">
+                <div className="px-6 py-5 border-b border-slate-100 flex items-center justify-between">
+                  <div>
+                    <h3 className="text-xs font-black uppercase tracking-widest text-[#00529B]">Location Inventory Stocks & Activity Ledger</h3>
+                    <p className="text-[10px] text-slate-400 font-medium mt-1">Starting Stock is dynamic: (Current remaining stock + items sold during period).</p>
+                  </div>
+                  <span className="px-4 py-1.5 bg-blue-50 text-blue-700 text-[9px] font-black uppercase tracking-widest rounded-full font-mono">
+                    Zone Status: Synchronized
+                  </span>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="bg-slate-50/50 text-[10px] uppercase font-black tracking-wider text-slate-400 border-b border-slate-100/50">
+                        <th className="px-6 py-4">Product details</th>
+                        <th className="px-4 py-4 text-center">Storage Zone</th>
+                        <th className="px-4 py-4 text-right font-mono">Starting Stock</th>
+                        <th className="px-4 py-4 text-right font-mono">Sold Qty</th>
+                        <th className="px-4 py-4 text-right font-mono">Remaining Stock</th>
+                        <th className="px-4 py-4 text-center">Packaging unit breakdown</th>
+                        <th className="px-4 py-4 text-center">Last Stock Date</th>
+                        <th className="px-6 py-4 text-center">Stock status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 text-xs text-slate-700">
+                      {(() => {
+                        const filteredRows: any[] = [];
+                        
+                        products.forEach(p => {
+                          const matchesSearch = !locationSearchQuery.trim() || 
+                            p.name.toLowerCase().includes(locationSearchQuery.toLowerCase()) ||
+                            (p.barcode || "").toLowerCase().includes(locationSearchQuery.toLowerCase()) ||
+                            (p.category || "").toLowerCase().includes(locationSearchQuery.toLowerCase());
+
+                          if (!matchesSearch) return;
+
+                          // Retrieve stocks for this products
+                          let prodStocks = stock.filter(s => s.productId === p.id);
+                          if (prodStocks.length === 0) {
+                            prodStocks = [{
+                              productId: p.id,
+                              inventoryLocationId: p.defaultLocationId || 'default-storage',
+                              quantity: p.stock || 0,
+                              lowStockThreshold: p.lowStockThreshold || 10,
+                              updatedAt: p.updatedAt
+                            }];
+                          }
+
+                          prodStocks.forEach(s => {
+                            if (selectedReportLocationId !== 'ALL' && s.inventoryLocationId !== selectedReportLocationId) return;
+
+                            const locName = locations.find(l => l.id === s.inventoryLocationId)?.name || 'Default Storage';
+                            
+                            // Sold count in currently filtered period
+                            let soldQty = 0;
+                            processedSales.forEach(sale => {
+                              (sale.items || []).forEach((item: any) => {
+                                if (item.productId === p.id && item.inventoryLocationId === s.inventoryLocationId) {
+                                  soldQty += item.quantity * (item.conversionRate || 1);
+                                }
+                              });
+                            });
+
+                            const currentRemaining = s.quantity || 0;
+                            const startStock = currentRemaining + soldQty;
+
+                            const capacity = p.packageCapacity || p.productsPerCarton || 0;
+                            const pkgName = p.packageType || 'Carton';
+                            let pkgBreakdownStr = '-';
+                            if (capacity > 1) {
+                              const fullPkgs = Math.floor(currentRemaining / capacity);
+                              const remainingUnits = currentRemaining % capacity;
+                              pkgBreakdownStr = `${fullPkgs} ${pkgName}s + ${remainingUnits} pcs`;
+                            }
+
+                            let dateRepresentation = 'Never';
+                            if (s.updatedAt) {
+                              if (s.updatedAt.seconds !== undefined) {
+                                dateRepresentation = new Date(s.updatedAt.seconds * 1000).toDateString();
+                              } else if (typeof s.updatedAt === 'string') {
+                                dateRepresentation = new Date(s.updatedAt).toDateString();
+                              } else if (s.updatedAt instanceof Date) {
+                                dateRepresentation = s.updatedAt.toDateString();
+                              } else if (typeof s.updatedAt?.toDate === 'function') {
+                                dateRepresentation = s.updatedAt.toDate().toDateString();
+                              }
+                            } else if (p.updatedAt) {
+                              dateRepresentation = new Date(p.updatedAt).toDateString();
+                            }
+
+                            const isLow = currentRemaining <= (s.lowStockThreshold ?? p.lowStockThreshold ?? 10);
+
+                            filteredRows.push({
+                              p,
+                              locName,
+                              startStock,
+                              soldQty,
+                              currentRemaining,
+                              pkgBreakdownStr,
+                              dateRepresentation,
+                              isLow,
+                              lowThresh: s.lowStockThreshold ?? p.lowStockThreshold ?? 10
+                            });
+                          });
+                        });
+
+                        if (filteredRows.length === 0) {
+                          return (
+                            <tr>
+                              <td colSpan={8} className="py-12 text-center text-slate-400 italic">
+                                No Location records matching current filters.
+                              </td>
+                            </tr>
+                          );
+                        }
+
+                        return filteredRows.map((row, rIdx) => (
+                          <tr key={`loc-rep-row-${row.p.id}-${row.locName}-${rIdx}`} className="hover:bg-slate-50/70 transition-all font-medium">
+                            <td className="px-6 py-4">
+                              <div className="flex flex-col">
+                                <span className="font-bold text-slate-900 text-sm">{row.p.name}</span>
+                                <span className="text-[10px] font-mono text-slate-400 mt-0.5 uppercase tracking-wider">
+                                  {row.p.barcode || row.p.sku || 'N/A'} • {row.p.category || 'General'}
+                                </span>
+                              </div>
+                            </td>
+                            <td className="px-4 py-4 text-center">
+                              <span className="px-3 py-1 bg-slate-900 text-emerald-400 rounded-xl text-[10px] font-black uppercase tracking-wider shadow-sm">
+                                {row.locName}
+                              </span>
+                            </td>
+                            <td className="px-4 py-4 text-right font-mono font-bold text-slate-500">
+                              {row.startStock}
+                            </td>
+                            <td className="px-4 py-4 text-right font-mono font-bold text-[#00529B] bg-blue-50/20">
+                              {row.soldQty} pcs
+                            </td>
+                            <td className={`px-4 py-4 text-right font-mono font-black ${row.isLow ? 'text-red-600 bg-rose-50/30' : 'text-slate-900'}`}>
+                              {row.currentRemaining}
+                            </td>
+                            <td className="px-4 py-4 text-center font-bold text-[10px] text-slate-500 font-mono">
+                              {row.pkgBreakdownStr}
+                            </td>
+                            <td className="px-4 py-4 text-center font-bold text-[10px] text-slate-400">
+                              {row.dateRepresentation}
+                            </td>
+                            <td className="px-6 py-4 text-center">
+                              {row.isLow ? (
+                                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-widest bg-rose-100 text-rose-700 animate-pulse">
+                                  <AlertTriangle className="h-3.5 w-3.5" />
+                                  LOW STOCK (&lt;{row.lowThresh})
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-widest bg-emerald-100 text-emerald-700">
+                                  GOOD STOCK
+                                </span>
+                              )}
+                            </td>
+                          </tr>
+                        ));
+                      })()}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
             </motion.div>
           )}
 

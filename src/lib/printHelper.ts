@@ -2,16 +2,27 @@
  * Triggers a robust print setup of a specific container's HTML inside an iframe context,
  * which is highly compatible with sandboxed iframes (e.g., AI Studio preview, local wrappers).
  */
+function updateDebugStep(stepId: number, status: 'Pending' | 'Success' | 'Warning' | 'Failed', message?: string) {
+  if (typeof window !== 'undefined' && (window as any).__PRINT_DEBUG__) {
+    (window as any).__PRINT_DEBUG__.updateStep(stepId, status, message);
+  }
+}
+
 export function printElementViaIframe(elementId: string, printFormat: '58mm' | '80mm' | 'standard') {
-  console.log("[PrintHelper] 1. printElementViaIframe started. elementId:", elementId, "format:", printFormat);
   const format = printFormat;
-  console.log("FORMAT RECEIVED BY PRINT HELPER:", format);
+  
+  if (typeof window !== 'undefined' && (window as any).__PRINT_DEBUG__) {
+    (window as any).__PRINT_DEBUG__.printFormat = printFormat;
+    (window as any).__PRINT_DEBUG__.receiptWidth = printFormat === '58mm' ? '58mm' : printFormat === '80mm' ? '80mm' : 'auto';
+    (window as any).__PRINT_DEBUG__.printMethod = "iframe.contentWindow.print()";
+  }
+
+  updateDebugStep(1, 'Success', `Initiated receipt printing (format: ${printFormat})`);
 
   let element: HTMLElement | null = null;
   try {
     element = document.getElementById(elementId) as HTMLElement | null;
     if (!element) {
-      console.log("[PrintHelper] elementId not found, checking alternative IDs");
       element = document.getElementById('portal-printable-receipt') as HTMLElement | null;
     }
     if (!element) {
@@ -20,32 +31,37 @@ export function printElementViaIframe(elementId: string, printFormat: '58mm' | '
     if (!element) {
       element = (document.querySelector('[id*="receipt"]') || document.querySelector('[id*="printable"]')) as HTMLElement | null;
     }
-  } catch (error) {
+  } catch (error: any) {
     console.error("[PrintHelper] Error locating target element:", error);
+    updateDebugStep(3, 'Failed', `Error checking target layout: ${error.message}`);
   }
 
   if (!element) {
+    updateDebugStep(3, 'Failed', `Element target elements could not be resolved!`);
     console.error(`[PrintHelper] Element with ID "${elementId}" not found for iframe printing. Falling back to window.print()`);
     try {
+      updateDebugStep(8, 'Warning', 'Redirecting to global window.print() selector due to element omission');
       window.print();
-    } catch (err) {
+    } catch (err: any) {
       console.error("[PrintHelper] Error triggering fallback window.print():", err);
+      updateDebugStep(8, 'Failed', `Omissions fallback layout printed with failure: ${err.message}`);
     }
     return;
   }
 
-  console.log("[PrintHelper] 2. target element found. ID:", element.id, "TagName:", element.tagName);
+  updateDebugStep(3, 'Success', `Target element successfully located in DOM tree.`);
 
   let baseHtml = '';
   try {
     baseHtml = element.innerHTML;
-  } catch (error) {
+    updateDebugStep(2, 'Success', `Built custom print raw output (HTML size: ${baseHtml.length} bytes)`);
+  } catch (error: any) {
     console.error("[PrintHelper] Error getting element innerHTML:", error);
+    updateDebugStep(2, 'Failed', `Error building content string: ${error.message}`);
   }
   
   let iframe: HTMLIFrameElement;
   try {
-    console.log("[PrintHelper] 3. iframe created");
     iframe = document.createElement('iframe');
     iframe.style.position = 'fixed';
     iframe.style.right = '0';
@@ -54,8 +70,10 @@ export function printElementViaIframe(elementId: string, printFormat: '58mm' | '
     iframe.style.height = '0';
     iframe.style.border = '0';
     iframe.style.zIndex = '-9999';
-  } catch (error) {
+    updateDebugStep(4, 'Success', `Sandbox iframe memory workspace initialized.`);
+  } catch (error: any) {
     console.error("[PrintHelper] Error creating iframe:", error);
+    updateDebugStep(4, 'Failed', `Failed constructing iframe node: ${error.message}`);
     try {
       window.print();
     } catch (e) {
@@ -65,10 +83,11 @@ export function printElementViaIframe(elementId: string, printFormat: '58mm' | '
   }
 
   try {
-    console.log("[PrintHelper] 4. iframe appended to DOM");
     document.body.appendChild(iframe);
-  } catch (error) {
+    updateDebugStep(4, 'Success', `Sandbox iframe tree attached to active viewport.`);
+  } catch (error: any) {
     console.error("[PrintHelper] Error appending iframe to DOM:", error);
+    updateDebugStep(4, 'Failed', `Failed appending sandbox to DOM body: ${error.message}`);
     try {
       window.print();
     } catch (e) {
@@ -85,6 +104,7 @@ export function printElementViaIframe(elementId: string, printFormat: '58mm' | '
   }
 
   if (!doc) {
+    updateDebugStep(4, 'Failed', `Could not fetch inner frames contentDocument interface structure`);
     console.error('[PrintHelper] Could not access iframe document workspace. Falling back to window.print()');
     try {
       window.print();
@@ -100,30 +120,34 @@ export function printElementViaIframe(elementId: string, printFormat: '58mm' | '
     document.querySelectorAll('link[rel="stylesheet"], style').forEach((styleNode) => {
       styleTags += styleNode.outerHTML;
     });
-  } catch (error) {
+    updateDebugStep(6, 'Success', `Dynamically imported ${document.querySelectorAll('link[rel="stylesheet"], style').length} current UI style blocks to iframe context.`);
+  } catch (error: any) {
     console.error("[PrintHelper] Error collecting stylesheets:", error);
+    updateDebugStep(6, 'Warning', `Could not completely synchronise app style references: ${error.message}`);
   }
 
   try {
-    console.log("[PrintHelper] 5. iframe document opened");
     doc.open();
-  } catch (error) {
+  } catch (error: any) {
     console.error("[PrintHelper] Error opening iframe document:", error);
   }
 
   let pageCss = '';
   try {
     pageCss = `@page { size: ${printFormat === '58mm' ? '58mm auto' : printFormat === '80mm' ? '80mm auto' : 'auto'}; margin: 0; }`;
-    console.log("GENERATED PAGE CSS:", pageCss);
-  } catch (error) {
+    updateDebugStep(7, 'Success', `Applied active CSS parameters format size specs: ${pageCss}`);
+    if (typeof window !== 'undefined' && (window as any).__PRINT_DEBUG__) {
+      (window as any).__PRINT_DEBUG__.generatedCss = pageCss;
+    }
+  } catch (error: any) {
     console.error("[PrintHelper] Error generating or logging page CSS:", error);
+    updateDebugStep(7, 'Failed', `Error binding specific styles: ${error.message}`);
   }
 
   const isReceipt = printFormat === '58mm' || printFormat === '80mm';
   const widthVal = isReceipt ? printFormat : 'auto';
 
   try {
-    console.log("[PrintHelper] 6. html written");
     doc.write(`
       <!DOCTYPE html>
       <html>
@@ -196,95 +220,58 @@ export function printElementViaIframe(elementId: string, printFormat: '58mm' | '
         </body>
       </html>
     `);
-  } catch (error) {
+    updateDebugStep(5, 'Success', `Injected full HTML template and dynamic classes.`);
+  } catch (error: any) {
     console.error("[PrintHelper] Error writing HTML to iframe:", error);
+    updateDebugStep(5, 'Failed', `HTML Injection crash: ${error.message}`);
   }
 
   try {
-    console.log("[PrintHelper] 7. iframe document closed");
     doc.close();
-  } catch (error) {
+  } catch (error: any) {
     console.error("[PrintHelper] Error closing iframe document:", error);
-  }
-
-  // Setup afterprint listeners if supported
-  try {
-    if (iframe.contentWindow) {
-      console.log("[PrintHelper] Setting up afterprint event listener on iframe.contentWindow");
-      iframe.contentWindow.addEventListener('afterprint', () => {
-        console.log("[PrintHelper] 11. afterprint fired (from event listener)");
-      });
-      // also onafterprint property
-      (iframe.contentWindow as any).onafterprint = () => {
-        console.log("[PrintHelper] 11. afterprint fired (from onafterprint property)");
-      };
-    }
-  } catch (error) {
-    console.error("[PrintHelper] Error setting up afterprint listeners:", error);
   }
 
   // Trigger print and clean up
   setTimeout(() => {
     const hasContentWindow = !!iframe.contentWindow;
-    console.log("[PrintHelper] 8. iframe contentWindow exists:", hasContentWindow);
-    console.log("[PrintHelper] Sandbox / Iframe state (window.self !== window.top):", window.self !== window.top);
-
-    try {
-      console.log("[PrintHelper] window.onafterprint status:", typeof window.onafterprint);
-      if (iframe.contentWindow) {
-        console.log("[PrintHelper] iframe.contentWindow.onafterprint status:", typeof (iframe.contentWindow as any).onafterprint);
-      }
-    } catch (e) {
-      console.error("[PrintHelper] Error checking onafterprint properties:", e);
-    }
 
     if (hasContentWindow) {
       try {
-        console.log("[PrintHelper] 9. focus called");
         iframe.contentWindow?.focus();
       } catch (error) {
         console.error("[PrintHelper] Error focusing iframe contentWindow:", error);
       }
 
       try {
-        console.log("[PrintHelper] 10. print() about to be called (IMMEDIATELY BEFORE)");
+        updateDebugStep(8, 'Success', 'Launching print overlay from target window frame object...');
         iframe.contentWindow?.print();
-        console.log("[PrintHelper] 10. print() call executed successfully (IMMEDIATELY AFTER)");
-      } catch (e) {
+        updateDebugStep(9, 'Success', 'Printer spooler accepted raw print job frame target');
+      } catch (e: any) {
+        updateDebugStep(8, 'Warning', `Print triggers failed: ${e.message}. Executing parent fallback window.print()`);
         console.warn("[PrintHelper] Failed standard iframe trigger. Falling back to parent print request.", e);
         try {
-          console.log("[PrintHelper] Falling back to standard window.print() (IMMEDIATELY BEFORE)");
           window.print();
-          console.log("[PrintHelper] Falling back to standard window.print() (IMMEDIATELY AFTER)");
         } catch (err) {
           console.error("[PrintHelper] Error running fallback window.print():", err);
         }
       }
     } else {
+      updateDebugStep(8, 'Warning', 'contentWindow not available. Invoking parents window.print() dialog.');
       console.warn("[PrintHelper] contentWindow not available. Triggering window.print()");
       try {
-        console.log("[PrintHelper] Direct fallback to standard window.print() (IMMEDIATELY BEFORE)");
         window.print();
-        console.log("[PrintHelper] Direct fallback to standard window.print() (IMMEDIATELY AFTER)");
       } catch (err) {
         console.error("[PrintHelper] Error running window.print():", err);
       }
     }
 
-    // Diagnostics check after 2 seconds
-    setTimeout(() => {
-      console.log("[PrintHelper] Diagnostics stage check: 2 seconds after printing initialization flow completed.");
-    }, 2000);
-
     // Clean up iframe after printing is prompted
     setTimeout(() => {
       try {
-        console.log("[PrintHelper] 12. cleanup executed");
         if (iframe.parentNode) {
           document.body.removeChild(iframe);
-          console.log("[PrintHelper] iframe removed from body successfully");
-        } else {
-          console.log("[PrintHelper] iframe parentNode not found, it might already be removed");
+          updateDebugStep(12, 'Success', `Cleaned up memory footprint. Diagnostics task done.`);
         }
       } catch (error) {
         console.error("[PrintHelper] Error during cleanup stage:", error);
