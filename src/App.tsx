@@ -25,7 +25,10 @@ function PrivateRoute({ children, allowedRoles }: { children: React.ReactNode; a
   // Prevent immediate redirect back to /login during login transition
   const directUser = auth.currentUser;
 
-  if (loading || (directUser && !user)) {
+  // If we already have a user and profile loaded, do not black out the screen for background reloads
+  const hasSession = !!user && !!profile;
+
+  if (!hasSession && (loading || (directUser && !user))) {
     return <div className="h-screen w-screen flex items-center justify-center font-mono bg-slate-50 text-slate-900">LOADING NODE...</div>;
   }
   
@@ -84,16 +87,35 @@ const syncOfflineData = async () => {
             delete finalSaleData.splitPayments;
           }
           
+          // 1. ALL READS FIRST
+          const itemSpecs: {
+            sItem: any;
+            productRef: any;
+            stockRef: any;
+            productSnap: any;
+            stockSnap: any;
+          }[] = [];
+
           for (const sItem of sale.items) {
             const productRef = doc(firestore, 'products', sItem.productId);
             const stockId = `${sItem.productId}_${sItem.inventoryLocationId}`;
             const stockRef = doc(firestore, 'inventory_location_stock', stockId);
             
-            const [productSnap, stockSnap] = await Promise.all([
-              transaction.get(productRef),
-              transaction.get(stockRef)
-            ]);
+            const productSnap = await transaction.get(productRef);
+            const stockSnap = await transaction.get(stockRef);
             
+            itemSpecs.push({
+              sItem,
+              productRef,
+              stockRef,
+              productSnap,
+              stockSnap
+            });
+          }
+          
+          // 2. ALL WRITES AFTER
+          for (const spec of itemSpecs) {
+            const { sItem, productRef, stockRef, productSnap, stockSnap } = spec;
             const totalUnitsToDeduct = sItem.quantity * (sItem.conversionRate || 1);
             
             if (productSnap.exists()) {

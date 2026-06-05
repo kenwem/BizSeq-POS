@@ -702,14 +702,35 @@ const POS: React.FC = () => {
                 delete finalSaleData.splitPayments;
               }
               
+              // 1. ALL READS FIRST
+              const productSpecs: {
+                item: any;
+                productRef: any;
+                stockRef: any;
+                productSnap: any;
+                stockSnap: any;
+              }[] = [];
+
               for (const item of cart as any[]) {
                 const productRef = doc(db, 'products', item.productId);
                 const stockId = `${item.productId}_${item.inventoryLocationId}`;
                 const stockRef = doc(db, 'inventory_location_stock', stockId);
                 
-                // Sequential transaction gets for optimal cross-browser stability and preventing Firestore client-side race locks
                 const productSnap = await transaction.get(productRef);
                 const stockSnap = await transaction.get(stockRef);
+                
+                productSpecs.push({
+                  item,
+                  productRef,
+                  stockRef,
+                  productSnap,
+                  stockSnap
+                });
+              }
+
+              // 2. ALL WRITES AFTER
+              for (const spec of productSpecs) {
+                const { item, productRef, stockRef, productSnap, stockSnap } = spec;
                 
                 if (!productSnap.exists()) {
                   throw new Error(`Product ${item.name} not found.`);
@@ -717,7 +738,6 @@ const POS: React.FC = () => {
                 
                 const currentProductData = productSnap.data();
                 const currentTotalStock = currentProductData.stock || 0;
-                // Robust check: if the specific stock location record does not exist yet, fallback to parent total stock
                 const currentSectionStock = stockSnap.exists() 
                   ? (stockSnap.data().quantity ?? 0) 
                   : currentTotalStock;
@@ -1352,16 +1372,24 @@ const POS: React.FC = () => {
                     </div>
 
                     {/* Quantity controls optimized for one-touch with thumb */}
-                    <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
+                    <div className="flex items-center gap-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
                       <button 
-                        onClick={() => updateQuantity(item.productId, -1, item.unitName, item.inventoryLocationId)}
-                        className="w-6 h-6 rounded-lg bg-white border border-slate-200 flex items-center justify-center text-xs font-black font-mono text-slate-700 active:scale-95 hover:bg-slate-50 shadow-sm"
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          e.preventDefault();
+                          updateQuantity(item.productId, -1, item.unitName, item.inventoryLocationId);
+                        }}
+                        className="w-10 h-10 md:w-8 md:h-8 rounded-xl bg-slate-100 border border-slate-200 flex items-center justify-center text-sm font-black font-mono text-slate-700 active:bg-slate-200 active:scale-95 transition-all shadow-sm cursor-pointer select-none"
                       >
                         -
                       </button>
-                      <span className="w-5 text-center font-mono font-black text-xs text-slate-800">{item.quantity}</span>
+                      <span className="w-6 text-center font-mono font-black text-xs text-slate-800 select-none">{item.quantity}</span>
                       <button 
-                        onClick={() => {
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          e.preventDefault();
                           const limitCheck = validateStockAddition(item.productId, item.inventoryLocationId, (item.quantity + 1) * (item.conversionRate || 1), idx);
                           if (!limitCheck.isValid) {
                             setLowStockAlert({
@@ -1376,15 +1404,20 @@ const POS: React.FC = () => {
                           }
                           updateQuantity(item.productId, 1, item.unitName, item.inventoryLocationId);
                         }}
-                        className="w-6 h-6 rounded-lg bg-white border border-slate-200 flex items-center justify-center text-xs font-black font-mono text-slate-700 active:scale-95 hover:bg-slate-50 shadow-sm"
+                        className="w-10 h-10 md:w-8 md:h-8 rounded-xl bg-slate-100 border border-slate-200 flex items-center justify-center text-sm font-black font-mono text-slate-700 active:bg-slate-200 active:scale-95 transition-all shadow-sm cursor-pointer select-none"
                       >
                         +
                       </button>
                       <button 
-                        onClick={() => removeFromCart(item.productId, item.unitName, item.inventoryLocationId)}
-                        className="w-6 h-6 ml-1.5 rounded-lg bg-rose-50 hover:bg-rose-100/80 flex items-center justify-center text-rose-600 active:scale-95 border border-rose-200"
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          e.preventDefault();
+                          removeFromCart(item.productId, item.unitName, item.inventoryLocationId);
+                        }}
+                        className="w-10 h-10 md:w-8 md:h-8 ml-1 rounded-xl bg-rose-50 hover:bg-rose-100 flex items-center justify-center text-rose-600 active:bg-rose-200 active:scale-95 border border-rose-200 transition-all cursor-pointer"
                       >
-                        <Trash2 className="h-3 w-3" />
+                        <Trash2 className="h-4 w-4" />
                       </button>
                     </div>
                   </div>

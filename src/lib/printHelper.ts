@@ -11,6 +11,59 @@ function updateDebugStep(stepId: number, status: 'Pending' | 'Success' | 'Warnin
 export function printElementViaIframe(elementId: string, printFormat: '58mm' | '80mm' | 'standard') {
   const format = printFormat;
   
+  if (typeof window !== 'undefined') {
+    const ua = navigator.userAgent.toLowerCase();
+    const isWebView = ua.includes('android') && (ua.includes('wv') || ua.includes('webview') || ua.includes('version/')) || ua.includes('webintoapp') || (window as any).WebIntoApp || ua.includes('apk') || (window as any).AndroidDevice;
+    
+    if (isWebView) {
+      const existingModal = document.getElementById('webview-print-alert-modal');
+      if (!existingModal) {
+        const alertDiv = document.createElement('div');
+        alertDiv.id = 'webview-print-alert-modal';
+        alertDiv.style.position = 'fixed';
+        alertDiv.style.inset = '0';
+        alertDiv.style.backgroundColor = 'rgba(0, 0, 0, 0.75)';
+        alertDiv.style.zIndex = '999999';
+        alertDiv.style.display = 'flex';
+        alertDiv.style.alignItems = 'center';
+        alertDiv.style.justifyContent = 'center';
+        alertDiv.style.padding = '20px';
+        alertDiv.style.fontFamily = 'system-ui, -apple-system, sans-serif';
+        
+        alertDiv.innerHTML = `
+          <div style="background-color: white; border-radius: 16px; max-width: 400px; width: 100%; padding: 24px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25); text-align: center; border: 1px solid #E5E7EB; color: #1f2937;">
+            <div style="display: inline-flex; height: 48px; width: 48px; align-items: center; justify-content: center; border-radius: 9999px; background-color: #FEF3C7; color: #D97706; margin-bottom: 16px;">
+              <svg style="height: 24px; width: 24px;" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+              </svg>
+            </div>
+            <h3 style="font-size: 18px; font-weight: 800; color: #111827; margin: 0 0 8px 0; text-transform: uppercase; letter-spacing: -0.025em; font-family: inherit;">APK WebView Print Block</h3>
+            <p style="font-size: 13px; color: #4B5563; line-height: 1.5; margin: 0 0 20px 0; text-align: left; font-family: inherit;">
+              Standard print dialogues are disabled by Android's security sandbox rules when running inside APK wrappers.<br><br>
+              <strong>To print receipts from this device:</strong><br>
+              1. Use the <strong>Bluetooth ESC/POS</strong> option to print wirelessly to portable thermal printers.<br>
+              2. Or run the app inside a mobile web browser (e.g. <strong>Chrome</strong>) where system PDF printing is allowed.
+            </p>
+            <button 
+              id="close-webview-print-alert-btn"
+              style="width: 100%; background-color: #00529B; color: white; border: none; font-weight: 700; font-size: 13px; padding: 12px; border-radius: 8px; cursor: pointer; transition: background-color 0.2s; font-family: inherit;"
+            >
+              I UNDERSTAND
+            </button>
+          </div>
+        `;
+        document.body.appendChild(alertDiv);
+        
+        const closeBtn = alertDiv.querySelector('#close-webview-print-alert-btn') as HTMLButtonElement | null;
+        if (closeBtn) {
+          closeBtn.addEventListener('click', () => {
+            document.body.removeChild(alertDiv);
+          });
+        }
+      }
+    }
+  }
+
   if (typeof window !== 'undefined' && (window as any).__PRINT_DEBUG__) {
     (window as any).__PRINT_DEBUG__.printFormat = printFormat;
     (window as any).__PRINT_DEBUG__.receiptWidth = printFormat === '58mm' ? '58mm' : printFormat === '80mm' ? '80mm' : 'auto';

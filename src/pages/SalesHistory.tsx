@@ -280,17 +280,35 @@ const SalesHistory: React.FC = () => {
         if (!saleSnap.exists()) throw new Error("Sale records not found.");
         if (saleSnap.data().status === 'cancelled') throw new Error("Sale is already cancelled.");
         
-        // Restore stock
+        // 1. ALL READS FIRST
+        const restoreSpecs: {
+          item: any;
+          productRef: any;
+          stockRef: any;
+          productSnap: any;
+          stockSnap: any;
+        }[] = [];
+
         for (const item of sale.items as any[]) {
           const productRef = doc(db, 'products', item.productId);
           const stockId = `${item.productId}_${item.inventoryLocationId}`;
           const stockRef = doc(db, 'inventory_location_stock', stockId);
           
-          const [productSnap, stockSnap] = await Promise.all([
-            transaction.get(productRef),
-            transaction.get(stockRef)
-          ]);
+          const productSnap = await transaction.get(productRef);
+          const stockSnap = await transaction.get(stockRef);
           
+          restoreSpecs.push({
+            item,
+            productRef,
+            stockRef,
+            productSnap,
+            stockSnap
+          });
+        }
+        
+        // 2. ALL WRITES AFTER
+        for (const spec of restoreSpecs) {
+          const { item, productRef, stockRef, productSnap, stockSnap } = spec;
           const totalUnitsToRestore = item.quantity * (item.conversionRate || 1);
           
           if (productSnap.exists()) {
